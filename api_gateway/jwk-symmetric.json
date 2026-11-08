@@ -1,0 +1,10 @@
+{
+  "keys": [
+    {
+      "kty": "oct",
+      "kid": "gateway-test",
+      "alg": "HS256",
+      "k": "Z2F0ZXdheS10ZXN0LXNlY3JldC1jaGFuZ2UtbWUtMzItYnl0ZXM"
+    }
+  ]
+}

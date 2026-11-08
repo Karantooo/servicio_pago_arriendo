@@ -1,0 +1,161 @@
+{
+  "$schema": "https://www.krakend.io/schema/krakend.json",
+  "version": 4,
+  "name": "servicio-pago-arriendo-gateway",
+  "port": 8080,
+  "timeout": "3s",
+  "cache_ttl": "0s",
+  "endpoints": [
+    {
+      "endpoint": "/health",
+      "method": "GET",
+      "output_encoding": "json",
+      "backend": [
+        {
+          "host": ["http://mock-profile:8080"],
+          "url_pattern": "/health",
+          "encoding": "json"
+        }
+      ],
+      "extra_config": {
+        "qos/ratelimit/router": {
+          "max_rate": 20,
+          "every": "1s",
+          "capacity": 20,
+          "client_max_rate": 5,
+          "client_capacity": 5,
+          "strategy": "ip"
+        }
+      }
+    },
+    {
+      "endpoint": "/api/profile",
+      "method": "GET",
+      "output_encoding": "json",
+      "backend": [
+        {
+          "host": ["http://mock-profile:8080"],
+          "url_pattern": "/profile",
+          "encoding": "json",
+          "extra_config": {
+            "qos/ratelimit/proxy": {
+              "max_rate": 20,
+              "every": "1s",
+              "capacity": 20
+            },
+            "qos/circuit-breaker": {
+              "interval": 60,
+              "timeout": 10,
+              "max_errors": 3,
+              "log_status_change": true
+            }
+          }
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["cliente", "admin"],
+          "roles_key": "roles"
+        },
+        "qos/ratelimit/router": {
+          "max_rate": 100,
+          "every": "1s",
+          "capacity": 100,
+          "client_max_rate": 10,
+          "client_capacity": 10,
+          "strategy": "ip"
+        }
+      }
+    },
+    {
+      "endpoint": "/api/dashboard",
+      "method": "GET",
+      "output_encoding": "json",
+      "backend": [
+        {
+          "host": ["http://mock-profile:8080"],
+          "url_pattern": "/profile",
+          "encoding": "json",
+          "group": "profile",
+          "extra_config": {
+            "qos/circuit-breaker": {
+              "interval": 60,
+              "timeout": 10,
+              "max_errors": 3,
+              "log_status_change": true
+            }
+          }
+        },
+        {
+          "host": ["http://mock-rentals:8080"],
+          "url_pattern": "/rentals",
+          "encoding": "json",
+          "group": "rentals",
+          "extra_config": {
+            "qos/circuit-breaker": {
+              "interval": 60,
+              "timeout": 10,
+              "max_errors": 3,
+              "log_status_change": true
+            }
+          }
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["cliente", "admin"],
+          "roles_key": "roles"
+        },
+        "qos/ratelimit/router": {
+          "max_rate": 100,
+          "every": "1s",
+          "capacity": 100,
+          "client_max_rate": 10,
+          "client_capacity": 10,
+          "strategy": "ip"
+        }
+      }
+    },
+    {
+      "endpoint": "/api/rentals-unstable",
+      "method": "GET",
+      "output_encoding": "json",
+      "backend": [
+        {
+          "host": ["http://mock-rentals:8080"],
+          "url_pattern": "/failure",
+          "encoding": "json",
+          "extra_config": {
+            "qos/circuit-breaker": {
+              "interval": 60,
+              "timeout": 10,
+              "max_errors": 3,
+              "log_status_change": true
+            }
+          }
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["cliente", "admin"],
+          "roles_key": "roles"
+        }
+      }
+    }
+  ]
+}
