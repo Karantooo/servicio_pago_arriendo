@@ -4,6 +4,11 @@
   "name": "servicio-pago-arriendo-gateway",
   "port": 8080,
   "timeout": "3s",
+  "max_idle_connections": 100,
+  "max_idle_connections_per_host": 20,
+  "idle_connection_timeout": "60s",
+  "dialer_timeout": "1s",
+  "response_header_timeout": "2s",
   "cache_ttl": "0s",
   "endpoints": [
     {
@@ -47,6 +52,7 @@
               "interval": 60,
               "timeout": 10,
               "max_errors": 3,
+              "name": "cb-api-profile",
               "log_status_change": true
             }
           }
@@ -87,6 +93,7 @@
               "interval": 60,
               "timeout": 10,
               "max_errors": 3,
+              "name": "cb-dashboard-profile",
               "log_status_change": true
             }
           }
@@ -101,6 +108,7 @@
               "interval": 60,
               "timeout": 10,
               "max_errors": 3,
+              "name": "cb-dashboard-rentals",
               "log_status_change": true
             }
           }
@@ -140,6 +148,7 @@
               "interval": 60,
               "timeout": 10,
               "max_errors": 3,
+              "name": "cb-rentals-unstable",
               "log_status_change": true
             }
           }
