@@ -36,6 +36,8 @@ services:
       GRPC_TIMEOUT_SECONDS: "${GRPC_TIMEOUT_SECONDS}"
       ADMIN_API_KEY: ${ADMIN_API_KEY}
       CLIENT_API_KEY: ${CLIENT_API_KEY}
+      PAYMENTS_API_URL: ${PAYMENTS_API_URL:-http://payments:8003}
+      PAYMENTS_TIMEOUT_SECONDS: ${PAYMENTS_TIMEOUT_SECONDS:-3}
 
     depends_on:
       arriendo-db:
