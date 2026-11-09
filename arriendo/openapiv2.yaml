@@ -564,11 +564,11 @@ paths:
               $ref: '#/components/schemas/RentalRequest'
       responses:
         '201':
-          description: Arriendo creado y Saga completada
+          description: Arriendo creado; pago iniciado y pendiente de confirmación
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/RentalResponse'
+                $ref: '#/components/schemas/RentalCreationResponse'
         '400':
           description: Datos o fechas inválidos
           content:
@@ -914,6 +914,39 @@ components:
           - RETURNING
           example: ACTIVE
 
+    PaymentCheckout:
+      type: object
+      required:
+      - paymentId
+      - status
+      properties:
+        paymentId:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum:
+          - PENDING
+          - CHARGED
+        redirectUrl:
+          type: string
+          format: uri
+          nullable: true
+        token:
+          type: string
+          nullable: true
+
+    RentalCreationResponse:
+      type: object
+      required:
+      - rental
+      - payment
+      properties:
+        rental:
+          $ref: '#/components/schemas/RentalResponse'
+        payment:
+          $ref: '#/components/schemas/PaymentCheckout'
+  
     SagaResponse:
       type: object
       required:
