@@ -1,0 +1,806 @@
+
+openapi: 3.0.3
+
+info:
+  title: Payments API
+  description: |
+    API interna del servicio de Pagos para el sistema
+    distribuido de arriendo de equipos (Forma M).
+
+    Permite iniciar cobros mediante Transbank Webpay Plus,
+    confirmar transacciones, realizar reembolsos y consultar
+    el estado de los pagos.
+
+    La integración utiliza el SDK oficial de Transbank para Python.
+  version: 1.1.0
+
+servers:
+  - url: http://payments:8003
+    description: Servicio interno en Docker
+
+tags:
+  - name: Payments
+    description: Operaciones de cobro, confirmación, reembolso y consulta.
+  - name: Transbank
+    description: Operaciones relacionadas con Webpay Plus.
+  - name: Health
+    description: Verificación de disponibilidad del microservicio.
+
+paths:
+
+  # ==========================================
+  # 1. INICIAR UN COBRO
+  # ==========================================
+
+  /payments/charge:
+    post:
+      tags:
+        - Payments
+      summary: Iniciar un cobro
+      description: |
+        Inicia una transacción de pago mediante Transbank Webpay Plus.
+
+        Payments registra la operación, genera una orden de compra
+        y solicita a Transbank la creación de la transacción.
+
+        Como resultado obtiene un token y una URL de redireccionamiento.
+        El usuario debe ser enviado a Webpay para completar el pago.
+
+        La transacción queda en estado PENDING hasta que se reciba
+        el retorno de Transbank y se confirme mediante commit.
+
+        Corresponde al segundo paso de la Saga de arriendo.
+      operationId: chargePayment
+
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: |
+            Identificador único de la operación.
+            Debe reutilizarse en los reintentos del mismo cobro.
+          schema:
+            type: string
+          example: charge-1001
+
+        - name: X-Request-ID
+          in: header
+          required: false
+          description: Identificador para rastrear la solicitud.
+          schema:
+            type: string
+          example: req-001
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - rental_id
+                - customer_id
+                - amount_rent
+                - amount_deposit
+              properties:
+                rental_id:
+                  type: integer
+                  format: int64
+                  description: Identificador del arriendo.
+                  example: 1001
+                customer_id:
+                  type: integer
+                  format: int64
+                  description: Identificador del cliente.
+                  example: 25
+                amount_rent:
+                  type: integer
+                  minimum: 0
+                  description: Monto correspondiente al arriendo en CLP.
+                  example: 50000
+                amount_deposit:
+                  type: integer
+                  minimum: 0
+                  description: Monto correspondiente a la garantía en CLP.
+                  example: 100000
+            example:
+              rental_id: 1001
+              customer_id: 25
+              amount_rent: 50000
+              amount_deposit: 100000
+
+      responses:
+        '201':
+          description: Transacción creada correctamente en Transbank.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChargeResponse'
+              example:
+                payment_id: 501
+                rental_id: 1001
+                amount_total: 150000
+                status: PENDING
+                buy_order: RENT-1001-A8F21C
+                session_id: SESSION-1001
+                token: TOKEN_GENERADO_POR_TRANSBANK
+                redirect_url: https://webpay3gint.transbank.cl/webpayserver/initTransaction
+                createdAt: '2026-11-08T15:30:00Z'
+
+        '200':
+          description: |
+            La operación ya había sido iniciada anteriormente.
+            Se devuelve el resultado asociado a la misma clave
+            de idempotencia, sin crear otra transacción.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChargeResponse'
+
+        '400':
+          description: Datos inválidos o montos incorrectos.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+        '409':
+          description: Conflicto con una operación existente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+        '429':
+          description: Límite de solicitudes excedido.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+        '503':
+          description: Circuit Breaker abierto o Bulkhead saturado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+        '504':
+          description: Tiempo de espera agotado al comunicarse con Transbank.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+
+  # ==========================================
+  # 2. RETORNO Y CONFIRMACION DE TRANSBANK
+  # ==========================================
+
+  /payments/transbank/return:
+    get:
+      tags:
+        - Transbank
+      summary: Recibir retorno de Webpay mediante GET
+      description: |
+        Endpoint configurado como return_url de Webpay Plus.
+
+        Recibe el token_ws después de que el usuario finaliza
+        el proceso de pago en Transbank.
+
+        Payments utiliza el token para ejecutar commit mediante
+        el SDK oficial y verificar el resultado de la autorización.
+
+        El pago solo se considera exitoso cuando status es AUTHORIZED
+        y response_code es 0.
+
+        También contempla los parámetros de retorno de una
+        transacción cancelada o cuyo tiempo de pago expiró.
+      operationId: transbankReturnGet
+
+      parameters:
+        - name: token_ws
+          in: query
+          required: false
+          description: Token de una transacción finalizada en Webpay.
+          schema:
+            type: string
+          example: TOKEN_GENERADO_POR_TRANSBANK
+
+        - name: TBK_TOKEN
+          in: query
+          required: false
+          description: Token recibido cuando el usuario aborta el pago.
+          schema:
+            type: string
+
+        - name: TBK_ORDEN_COMPRA
+          in: query
+          required: false
+          description: Orden de compra asociada a la transacción.
+          schema:
+            type: string
+
+        - name: TBK_ID_SESION
+          in: query
+          required: false
+          description: Identificador de sesión de Webpay.
+          schema:
+            type: string
+
+      responses:
+        '200':
+          description: Retorno procesado y resultado de la transacción registrado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransbankReturnResponse'
+              example:
+                payment_id: 501
+                rental_id: 1001
+                status: CHARGED
+                response_code: 0
+                message: Pago autorizado correctamente.
+                createdAt: '2026-11-08T15:35:00Z'
+
+        '400':
+          description: Retorno inválido o parámetros insuficientes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+        '404':
+          description: No se encontró una transacción asociada al token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+        '409':
+          description: La transacción ya fue confirmada o presenta un conflicto de estado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+        '503':
+          description: Transbank no está disponible temporalmente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+        '504':
+          description: Tiempo de espera agotado al confirmar la transacción.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    post:
+      tags:
+        - Transbank
+      summary: Recibir retorno de Webpay mediante POST
+      description: |
+        Endpoint alternativo para recibir el retorno de Webpay
+        cuando el ambiente o flujo de integración utiliza POST.
+
+        Recibe token_ws para transacciones finalizadas o
+        TBK_TOKEN, TBK_ORDEN_COMPRA y TBK_ID_SESION para
+        transacciones abortadas o expiradas.
+
+        La confirmación se realiza directamente contra Transbank
+        mediante el SDK oficial cuando se recibe token_ws.
+      operationId: transbankReturnPost
+
+      requestBody:
+        required: false
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                token_ws:
+                  type: string
+                  description: Token de una transacción finalizada.
+                  example: TOKEN_GENERADO_POR_TRANSBANK
+                TBK_TOKEN:
+                  type: string
+                  description: Token recibido al abortar una transacción.
+                TBK_ORDEN_COMPRA:
+                  type: string
+                  description: Orden de compra de la transacción.
+                TBK_ID_SESION:
+                  type: string
+                  description: Identificador de sesión de Webpay.
+
+      responses:
+        '200':
+          description: Retorno procesado correctamente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransbankReturnResponse'
+
+        '400':
+          description: Parámetros de retorno inválidos.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+        '404':
+          description: Transacción no encontrada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+        '503':
+          description: Servicio de pagos o Transbank no disponible.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+        '504':
+          description: Tiempo de espera agotado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+
+  # ==========================================
+  # 3. REEMBOLSAR O ANULAR UN PAGO
+  # ==========================================
+
+  /payments/{payment_id}/refund:
+    post:
+      tags:
+        - Payments
+      summary: Reembolsar o anular un pago
+      description: |
+        Solicita la reversa o anulación de una transacción
+        previamente autorizada mediante Transbank Webpay Plus.
+
+        Se utiliza como compensación de la Saga cuando falla
+        un paso posterior, por ejemplo, al agendar la entrega
+        del equipo.
+
+        Payments recupera el token de Transbank almacenado
+        y ejecuta la operación refund mediante el SDK oficial.
+
+        La operación puede corresponder a una reversa o
+        anulación según las condiciones de Transbank.
+      operationId: refundPayment
+
+      parameters:
+        - name: payment_id
+          in: path
+          required: true
+          description: Identificador del pago que se desea reembolsar.
+          schema:
+            type: integer
+            format: int64
+          example: 501
+
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: |
+            Identificador único del reembolso.
+            Debe reutilizarse en los reintentos.
+          schema:
+            type: string
+          example: refund-1001
+
+        - name: X-Request-ID
+          in: header
+          required: false
+          description: Identificador de seguimiento.
+          schema:
+            type: string
+          example: req-002
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - reason
+                - rental_id
+              properties:
+                reason:
+                  type: string
+                  enum:
+                    - SAGA_COMPENSATION
+                  description: Motivo del reembolso.
+                  example: SAGA_COMPENSATION
+                rental_id:
+                  type: integer
+                  format: int64
+                  description: Identificador del arriendo asociado.
+                  example: 1001
+            example:
+              reason: SAGA_COMPENSATION
+              rental_id: 1001
+
+      responses:
+        '200':
+          description: Reversa o anulación procesada correctamente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefundResponse'
+              example:
+                refund_id: 701
+                payment_id: 501
+                rental_id: 1001
+                amount_refunded: 150000
+                status: REFUNDED
+                provider_operation: REVERSED
+                message: Reembolso procesado correctamente.
+                createdAt: '2026-11-08T15:40:00Z'
+
+        '400':
+          description: Solicitud inválida.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+        '404':
+          description: Pago inexistente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+        '409':
+          description: Pago no autorizado, ya reembolsado o estado incompatible.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+        '503':
+          description: Circuit Breaker abierto o Bulkhead saturado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+        '504':
+          description: Tiempo de espera agotado al solicitar el reembolso.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+
+  # ==========================================
+  # 4. CONSULTAR UN PAGO
+  # ==========================================
+
+  /payments/{payment_id}:
+    get:
+      tags:
+        - Payments
+      summary: Consultar un pago
+      description: |
+        Permite consultar la información y el estado actual
+        de una transacción.
+
+        P2 puede utilizar este endpoint para verificar
+        si el pago fue confirmado antes de continuar la Saga.
+
+        También permite consultar pagos cuyo resultado
+        se encuentre pendiente o sea incierto.
+      operationId: getPayment
+
+      parameters:
+        - name: payment_id
+          in: path
+          required: true
+          description: Identificador del pago.
+          schema:
+            type: integer
+            format: int64
+          example: 501
+
+      responses:
+        '200':
+          description: Información del pago obtenida correctamente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+              example:
+                payment_id: 501
+                rental_id: 1001
+                amount_total: 150000
+                status: CHARGED
+                buy_order: RENT-1001-A8F21C
+                createdAt: '2026-11-08T15:30:00Z'
+
+        '404':
+          description: Pago inexistente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+
+  # ==========================================
+  # 5. HEALTH
+  # ==========================================
+
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Verificar estado del servicio
+      description: |
+        Comprueba que el microservicio Payments se encuentra
+        activo y disponible para recibir solicitudes.
+
+        No requiere comunicarse con Transbank.
+        Permite verificar que Payments sigue funcionando
+        aunque la pasarela externa no esté disponible.
+      operationId: healthCheck
+
+      responses:
+        '200':
+          description: El servicio está funcionando correctamente.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - UP
+                    description: Estado actual del servicio.
+                    example: UP
+                  service:
+                    type: string
+                    description: Nombre del microservicio.
+                    example: payments
+                  createdAt:
+                    type: string
+                    format: date-time
+                    description: Fecha y hora en que se generó la respuesta.
+                    example: '2026-11-08T15:30:00Z'
+
+
+# ==========================================
+# MODELOS Y ESQUEMAS
+# ==========================================
+
+components:
+  schemas:
+
+    # --------------------------------------
+    # RESPUESTA DE INICIO DE COBRO
+    # --------------------------------------
+
+    ChargeResponse:
+      type: object
+      properties:
+        payment_id:
+          type: integer
+          format: int64
+          description: Identificador interno del pago.
+          example: 501
+        rental_id:
+          type: integer
+          format: int64
+          example: 1001
+        amount_total:
+          type: integer
+          minimum: 0
+          description: Monto total de la transacción en CLP.
+          example: 150000
+        status:
+          type: string
+          description: Estado actual del pago.
+          enum:
+            - PENDING
+            - CHARGED
+          example: PENDING
+        buy_order:
+          type: string
+          description: Orden de compra única generada para Transbank.
+          example: RENT-1001-A8F21C
+        session_id:
+          type: string
+          description: Identificador de sesión enviado a Transbank.
+          example: SESSION-1001
+        token:
+          type: string
+          description: |
+            Token de la transacción entregado por Transbank.
+            Se utiliza como valor del campo token_ws en el
+            formulario POST de redireccionamiento a Webpay.
+          example: TOKEN_GENERADO_POR_TRANSBANK
+        redirect_url:
+          type: string
+          format: uri
+          description: URL de Webpay Plus a la que se debe redirigir al usuario.
+          example: https://webpay3gint.transbank.cl/webpayserver/initTransaction
+        createdAt:
+          type: string
+          format: date-time
+          description: Fecha y hora en que se creó el registro del pago.
+          example: '2026-11-08T15:30:00Z'
+
+    # --------------------------------------
+    # RESPUESTA DEL RETORNO DE TRANSBANK
+    # --------------------------------------
+
+    TransbankReturnResponse:
+      type: object
+      properties:
+        payment_id:
+          type: integer
+          format: int64
+          description: Identificador interno del pago.
+          example: 501
+        rental_id:
+          type: integer
+          format: int64
+          example: 1001
+        status:
+          type: string
+          description: Estado interno resultante de la confirmación.
+          enum:
+            - CHARGED
+            - FAILED
+            - CANCELLED
+            - UNKNOWN
+          example: CHARGED
+        response_code:
+          type: integer
+          description: |
+            Código de respuesta de autorización de Transbank.
+            El valor 0 indica una autorización exitosa.
+          example: 0
+        message:
+          type: string
+          description: Resultado descriptivo de la confirmación.
+          example: Pago autorizado correctamente.
+        createdAt:
+          type: string
+          format: date-time
+          description: Fecha y hora en que se procesó el retorno de Transbank.
+          example: '2026-11-08T15:35:00Z'
+
+    # --------------------------------------
+    # RESPUESTA DE REEMBOLSO
+    # --------------------------------------
+
+    RefundResponse:
+      type: object
+      properties:
+        refund_id:
+          type: integer
+          format: int64
+          description: Identificador interno del reembolso.
+          example: 701
+        payment_id:
+          type: integer
+          format: int64
+          example: 501
+        rental_id:
+          type: integer
+          format: int64
+          example: 1001
+        amount_refunded:
+          type: integer
+          minimum: 0
+          description: Monto reembolsado en CLP.
+          example: 150000
+        status:
+          type: string
+          description: Estado interno del reembolso.
+          enum:
+            - REFUND_PENDING
+            - REFUNDED
+            - UNKNOWN
+          example: REFUNDED
+        provider_operation:
+          type: string
+          description: |
+            Tipo de operación informado por Transbank.
+            Puede corresponder a una reversa o anulación.
+          enum:
+            - REVERSED
+            - NULLIFIED
+          example: REVERSED
+        message:
+          type: string
+          example: Reembolso procesado correctamente.
+        createdAt:
+          type: string
+          format: date-time
+          description: Fecha y hora en que se procesó el reembolso.
+          example: '2026-11-08T15:40:00Z'
+
+    # --------------------------------------
+    # RESPUESTA DE CONSULTA DE PAGO
+    # --------------------------------------
+
+    PaymentResponse:
+      type: object
+      properties:
+        payment_id:
+          type: integer
+          format: int64
+          example: 501
+        rental_id:
+          type: integer
+          format: int64
+          example: 1001
+        amount_total:
+          type: integer
+          minimum: 0
+          example: 150000
+        status:
+          type: string
+          description: Estado actual de la transacción.
+          enum:
+            - PENDING
+            - CHARGED
+            - FAILED
+            - CANCELLED
+            - REFUND_PENDING
+            - REFUNDED
+            - UNKNOWN
+          example: CHARGED
+        buy_order:
+          type: string
+          description: Orden de compra asociada a la transacción.
+          example: RENT-1001-A8F21C
+        createdAt:
+          type: string
+          format: date-time
+          description: Fecha y hora en que se creó el registro del pago.
+          example: '2026-11-08T15:30:00Z'
+
+    # --------------------------------------
+    # RESPUESTA DE ERROR
+    # --------------------------------------
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Código identificador del error.
+          example: PAYMENT_PROVIDER_UNAVAILABLE
+        message:
+          type: string
+          description: Descripción del error ocurrido.
+          example: No fue posible comunicarse con Transbank.
+        status:
+          type: string
+          description: Estado asociado a la operación.
+          example: PENDING
+        retryable:
+          type: boolean
+          description: Indica si la operación puede reintentarse.
+          example: true
+        request_id:
+          type: string
+          description: Identificador de seguimiento de la solicitud.
+          example: req-001
+        createdAt:
+          type: string
+          format: date-time
+          description: Fecha y hora en que se generó la respuesta de error.
+          example: '2026-11-08T15:30:00Z'
