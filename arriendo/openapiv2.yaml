@@ -1,0 +1,1106 @@
+openapi: 3.0.3
+info:
+  title: API ArriendaPro
+  description: API REST para la gestión de arriendos y clientes.
+  version: 1.0.0
+servers:
+- url: http://localhost:8080
+  description: Entorno local (Docker Compose)
+tags:
+- name: Clients
+  description: Gestión de clientes
+- name: Rentals
+  description: Gestión de arriendos (consulta a Equipos vía gRPC)
+- name: Health
+  description: Estado del servicio
+security:
+- APIKeyHeader: []
+paths:
+  /health:
+    get:
+      security: []
+      tags:
+      - Health
+      summary: Estado del servicio
+      description: Endpoint público (sin autenticación) para el healthcheck de Docker. No depende de Equipos ni de la base de datos.
+      operationId: healthCheck
+      responses:
+        '200':
+          description: El servicio está en ejecución
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /v1/clients:
+    post:
+      tags:
+      - Clients
+      summary: Crear un nuevo cliente
+      description: Registra un nuevo cliente en el sistema de arriendos. El email debe ser único.
+      operationId: createClient
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientRequest'
+      responses:
+        '201':
+          description: Cliente creado correctamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientResponse'
+        '400':
+          description: Datos de entrada inválidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '401':
+          description: No autenticado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotAuthorizedError'
+        '403':
+          description: Permisos insuficientes (requiere rol `admin`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForbiddenError'
+        '409':
+          description: Ya existe un cliente con ese email (EMAIL_ALREADY_EXISTS)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+              examples:
+                email_already_exists:
+                  summary: EMAIL_ALREADY_EXISTS
+                  value:
+                    code: EMAIL_ALREADY_EXISTS
+                    message: Ya existe un cliente registrado con el email indicado.
+    get:
+      tags:
+      - Clients
+      summary: Listar clientes
+      description: Retorna la lista de clientes registrados. Si no existen registros, retorna una lista vacía.
+      operationId: getAllClients
+      parameters:
+      - name: limit
+        in: query
+        description: Cantidad máxima de registros a retornar (1 a 100)
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: offset
+        in: query
+        description: Cantidad de registros a saltar (paginación)
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      responses:
+        '200':
+          description: Lista de clientes (puede ser vacía)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ClientResponse'
+        '400':
+          description: Parámetros de entrada inválidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '401':
+          description: No autenticado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotAuthorizedError'
+        '403':
+          description: Permisos insuficientes (requiere rol `readonly` o `admin`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForbiddenError'
+  /v1/clients/{clientId}:
+    get:
+      tags:
+      - Clients
+      summary: Obtener datos de un cliente
+      description: Retorna la información de un cliente específico mediante su ID.
+      operationId: getClientById
+      parameters:
+      - name: clientId
+        in: path
+        description: ID del cliente
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      responses:
+        '200':
+          description: Datos obtenidos correctamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientResponse'
+        '400':
+          description: Parámetros de entrada inválidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '401':
+          description: No autenticado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotAuthorizedError'
+        '403':
+          description: Permisos insuficientes (requiere rol `readonly` o `admin`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForbiddenError'
+        '404':
+          description: Cliente no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+  /v1/rentals:
+    post:
+      tags:
+      - Rentals
+      summary: Crear un nuevo arriendo
+      description: Registra un nuevo arriendo verificando stock y reservando vía gRPC en Equipos.
+      operationId: createRental
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RentalRequest'
+      responses:
+        '201':
+          description: Arriendo creado y unidad reservada correctamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RentalResponse'
+        '400':
+          description: Solicitud incorrecta o fechas no válidas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '401':
+          description: No autenticado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotAuthorizedError'
+        '403':
+          description: Permisos insuficientes (requiere rol `admin`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForbiddenError'
+        '404':
+          description: Cliente o equipo inexistente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+        '409':
+          description: Sin unidades disponibles para el equipo solicitado (INSUFFICIENT_STOCK)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+              examples:
+                insufficient_stock:
+                  summary: INSUFFICIENT_STOCK
+                  value:
+                    code: INSUFFICIENT_STOCK
+                    message: No hay unidades disponibles para el equipo seleccionado.
+        '500':
+          description: Falló la compensación local de una reserva incompleta
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+        '502':
+          description: Error en la respuesta del servicio de Equipos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadGatewayError'
+        '503':
+          description: Servicio de Equipos (gRPC) no disponible
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceUnavailableError'
+        '504':
+          description: Timeout al comunicar con el servicio gRPC
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayTimeoutError'
+    get:
+      tags:
+      - Rentals
+      summary: Listar arriendos
+      description: Retorna la lista de arriendos registrados. Si no existen registros, retorna una lista vacía.
+      operationId: getAllRentals
+      parameters:
+      - name: limit
+        in: query
+        description: Cantidad máxima de registros a retornar (1 a 100)
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: offset
+        in: query
+        description: Cantidad de registros a saltar (paginación)
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      responses:
+        '200':
+          description: Lista de arriendos (puede ser vacía)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RentalResponse'
+        '400':
+          description: Parámetros de entrada inválidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '401':
+          description: No autenticado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotAuthorizedError'
+        '403':
+          description: Permisos insuficientes (requiere rol `readonly` o `admin`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForbiddenError'
+  /v1/rentals/{rentalId}:
+    get:
+      tags:
+      - Rentals
+      summary: Obtener datos de un arriendo
+      description: Retorna los datos de un arriendo específico mediante su ID.
+      operationId: getRentalById
+      parameters:
+      - name: rentalId
+        in: path
+        description: ID del arriendo
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      responses:
+        '200':
+          description: Datos obtenidos correctamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RentalResponse'
+        '400':
+          description: Parámetros de entrada inválidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '401':
+          description: No autenticado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotAuthorizedError'
+        '403':
+          description: Permisos insuficientes (requiere rol `readonly` o `admin`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForbiddenError'
+        '404':
+          description: Arriendo no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+  /v1/rentals/{rentalId}/return:
+    post:
+      tags:
+      - Rentals
+      summary: Retornar un arriendo
+      description: Finaliza el arriendo y libera la unidad en Equipos vía gRPC.
+      operationId: returnRental
+      parameters:
+      - name: rentalId
+        in: path
+        description: ID del arriendo a retornar
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      responses:
+        '200':
+          description: Arriendo retornado y unidad liberada correctamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RentalResponse'
+        '400':
+          description: Parámetros de entrada inválidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '401':
+          description: No autenticado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotAuthorizedError'
+        '403':
+          description: Permisos insuficientes (requiere rol `admin`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForbiddenError'
+        '404':
+          description: Arriendo no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+        '409':
+          description: 'Transición inválida (INVALID_STATE_TRANSITION): el arriendo ya estaba completado o cancelado'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+              examples:
+                invalid_state_transition:
+                  summary: INVALID_STATE_TRANSITION
+                  value:
+                    code: INVALID_STATE_TRANSITION
+                    message: El arriendo no está ACTIVE, por lo que no puede retornarse.
+        '500':
+          description: Falló la compensación del estado local
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+        '502':
+          description: Error en la respuesta del servicio de Equipos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadGatewayError'
+        '503':
+          description: Servicio de Equipos (gRPC) no disponible al intentar liberar unidad
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceUnavailableError'
+        '504':
+          description: Timeout al comunicar con el servicio gRPC
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayTimeoutError'
+  /v1/rentals/{rentalId}/cancel:
+    post:
+      tags:
+      - Rentals
+      summary: Cancelar un arriendo
+      description: Cancela un arriendo activo y revierte la reserva de unidad en Equipos vía gRPC.
+      operationId: cancelRental
+      parameters:
+      - name: rentalId
+        in: path
+        description: ID del arriendo a cancelar
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      responses:
+        '200':
+          description: Arriendo cancelado correctamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RentalResponse'
+        '400':
+          description: Parámetros de entrada inválidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '401':
+          description: No autenticado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotAuthorizedError'
+        '403':
+          description: Permisos insuficientes (requiere rol `admin`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForbiddenError'
+        '404':
+          description: Arriendo no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+        '409':
+          description: 'Transición inválida (INVALID_STATE_TRANSITION): el arriendo ya estaba completado o cancelado'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+              examples:
+                invalid_state_transition:
+                  summary: INVALID_STATE_TRANSITION
+                  value:
+                    code: INVALID_STATE_TRANSITION
+                    message: El arriendo no está ACTIVE, por lo que no puede cancelarse.
+        '500':
+          description: Falló la compensación del estado local
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+        '502':
+          description: Error en la respuesta del servicio de Equipos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadGatewayError'
+        '503':
+          description: Servicio de Equipos (gRPC) no disponible
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceUnavailableError'
+        '504':
+          description: Timeout al comunicar con el servicio gRPC
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayTimeoutError'
+  /v2/rentals:
+    get:
+      tags:
+      - Rentals
+      summary: Listar arriendos v2
+      operationId: getAllRentalsV2
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      responses:
+        '200':
+          description: Lista de arriendos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RentalResponse'
+    post:
+      tags:
+      - Rentals
+      summary: Crear arriendo con Saga
+      description: Reserva la unidad y coordina el arriendo mediante una Saga persistida.
+      operationId: createRentalV2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RentalRequest'
+      responses:
+        '201':
+          description: Arriendo creado y Saga completada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RentalResponse'
+        '400':
+          description: Datos o fechas inválidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '401':
+          description: No autenticado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotAuthorizedError'
+        '403':
+          description: Permisos insuficientes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForbiddenError'
+        '404':
+          description: Cliente inexistente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+        '409':
+          description: Conflicto al reservar la unidad
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '500':
+          description: Error de persistencia o compensación de la Saga
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+        '502':
+          description: Error del servicio de Equipos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadGatewayError'
+        '503':
+          description: Servicio de Equipos no disponible
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceUnavailableError'
+        '504':
+          description: Timeout; resultado posiblemente incierto
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayTimeoutError'
+  /v2/rentals/{rentalId}:
+    get:
+      tags:
+      - Rentals
+      summary: Obtener arriendo v2
+      operationId: getRentalByIdV2
+      parameters:
+      - name: rentalId
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      responses:
+        '200':
+          description: Arriendo encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RentalResponse'
+        '404':
+          description: Arriendo no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+  /v2/rentals/{rentalId}/saga:
+    get:
+      tags:
+      - Rentals
+      summary: Consultar estado de la Saga
+      operationId: getLatestSagaV2
+      parameters:
+      - name: rentalId
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      responses:
+        '200':
+          description: Última Saga del arriendo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SagaResponse'
+        '404':
+          description: Arriendo o Saga no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+  /v2/rentals/{rentalId}/cancel:
+    post:
+      tags:
+      - Rentals
+      summary: Cancelar arriendo con Saga
+      operationId: cancelRentalV2
+      parameters:
+      - name: rentalId
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      responses:
+        '200':
+          description: Arriendo cancelado y Saga completada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RentalResponse'
+        '404':
+          description: Arriendo no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+        '409':
+          description: Transición de estado inválida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '500':
+          description: Error de persistencia o compensación de la Saga
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+  /v2/rentals/{rentalId}/return:
+    post:
+      tags:
+      - Rentals
+      summary: Retornar arriendo con Saga
+      operationId: returnRentalV2
+      parameters:
+      - name: rentalId
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      responses:
+        '200':
+          description: Arriendo retornado y Saga completada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RentalResponse'
+        '404':
+          description: Arriendo no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+        '409':
+          description: Transición de estado inválida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '500':
+          description: Error de persistencia o compensación de la Saga
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+components:
+  schemas:
+    ClientRequest:
+      type: object
+      required:
+      - name
+      - email
+      properties:
+        name:
+          type: string
+          description: Nombre del cliente
+          example: Ana Pérez
+          minLength: 1
+          maxLength: 100
+        email:
+          type: string
+          format: email
+          description: Correo electrónico del cliente
+          example: ana@example.com
+          maxLength: 254
+
+    RentalHistory:
+      type: object
+      required:
+      - active
+      - completed
+      - cancelled
+      properties:
+        active:
+          type: array
+          description: Lista de IDs de arriendos activos
+          items:
+            type: integer
+          example:
+          - 1
+          - 3
+        completed:
+          type: array
+          description: Lista de IDs de arriendos finalizados
+          items:
+            type: integer
+          example:
+          - 2
+        cancelled:
+          type: array
+          description: Lista de IDs de arriendos cancelados
+          items:
+            type: integer
+          example:
+          - 4
+
+    ClientResponse:
+      type: object
+      required:
+      - id
+      - name
+      - email
+      - createdAt
+      - rentalHistory
+      properties:
+        id:
+          type: integer
+          description: ID del cliente
+          format: int32
+          maximum: 2147483647
+          example: 101
+        name:
+          type: string
+          description: Nombre del cliente
+          example: Ana Pérez
+        email:
+          type: string
+          format: email
+          description: Correo electrónico del cliente
+          example: ana@example.com
+        createdAt:
+          type: string
+          format: date-time
+          description: Fecha de creación del cliente
+          example: '2026-09-16T22:00:00Z'
+        rentalHistory:
+          $ref: '#/components/schemas/RentalHistory'
+          
+    RentalRequest:
+      type: object
+      required:
+      - clientId
+      - equipmentId
+      - startDate
+      - endDate
+      properties:
+        clientId:
+          type: integer
+          description: ID del cliente que realiza el arriendo
+          example: 101
+          format: int32
+          maximum: 2147483647
+          minimum: 1
+        equipmentId:
+          type: integer
+          description: ID del equipo a arrendar
+          example: 50
+          format: int32
+          maximum: 2147483647
+          minimum: 1
+        startDate:
+          type: string
+          format: date-time
+          description: Fecha de inicio del arriendo
+          example: '2026-09-20T10:00:00Z'
+        endDate:
+          type: string
+          format: date-time
+          description: Fecha de finalización
+          example: '2026-09-25T18:00:00Z'
+
+    RentalResponse:
+      type: object
+      required:
+      - id
+      - clientId
+      - equipmentId
+      - startDate
+      - endDate
+      - status
+      properties:
+        id:
+          type: integer
+          description: ID del arriendo
+          example: 1
+          format: int32
+          maximum: 2147483647
+        clientId:
+          type: integer
+          description: ID del cliente
+          example: 101
+        equipmentId:
+          type: integer
+          description: ID del equipo arrendado
+          example: 50
+        startDate:
+          type: string
+          format: date-time
+          description: Fecha de inicio del arriendo
+          example: '2026-09-20T10:00:00Z'
+        endDate:
+          type: string
+          format: date-time
+          description: Fecha de finalización
+          example: '2026-09-25T18:00:00Z'
+        status:
+          type: string
+          description: Estado del arriendo
+          enum:
+          - PENDING
+          - ACTIVE
+          - COMPLETED
+          - CANCELLED
+          - FAILED
+          - CANCELLING
+          - RETURNING
+          example: ACTIVE
+
+    SagaResponse:
+      type: object
+      required:
+      - id
+      - rentalId
+      - operation
+      - status
+      - currentStep
+      - createdAt
+      - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        rentalId:
+          type: integer
+        operation:
+          type: string
+          enum:
+          - CREATE
+          - CANCEL
+          - RETURN
+        status:
+          type: string
+          enum:
+          - STARTED
+          - IN_PROGRESS
+          - COMPLETED
+          - FAILED
+          - IN_DOUBT
+          - COMPENSATING
+          - COMPENSATED
+          - COMPENSATION_FAILED
+        currentStep:
+          type: string
+        error:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    BadRequestError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          example: BAD_REQUEST
+        message:
+          type: string
+          example: El cuerpo de la solicitud no cumple con las validaciones requeridas.
+    NotAuthorizedError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          example: UNAUTHORIZED
+        message:
+          type: string
+          example: Token de autenticación faltante, inválido o expirado.
+
+    ForbiddenError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          example: FORBIDDEN
+        message:
+          type: string
+          example: El usuario autenticado no posee los permisos necesarios para realizar esta acción.
+
+    NotFoundError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          example: RESOURCE_NOT_FOUND
+        message:
+          type: string
+          example: El recurso solicitado no existe en el sistema.
+
+    ConflictError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          enum:
+          - INSUFFICIENT_STOCK
+          - INVALID_STATE_TRANSITION
+          - EMAIL_ALREADY_EXISTS
+          - EQUIPMENTS_RESOURCE_ALREADY_EXISTS
+          - EQUIPMENTS_OPERATION_ABORTED
+          description: |-
+            Motivo del conflicto:
+            - INSUFFICIENT_STOCK: no hay unidades disponibles del equipo (POST /v1/rentals).
+            - INVALID_STATE_TRANSITION: el arriendo no está ACTIVE (return y cancel).
+            - EMAIL_ALREADY_EXISTS: el email ya está registrado (POST /v1/clients).
+            - EQUIPMENTS_RESOURCE_ALREADY_EXISTS / EQUIPMENTS_OPERATION_ABORTED: conflicto informado por Equipos.
+          example: INSUFFICIENT_STOCK
+        message:
+          type: string
+          example: No hay unidades disponibles para el equipo seleccionado.
+
+    ServiceUnavailableError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          example: EQUIPMENTS_SERVICE_UNAVAILABLE
+        message:
+          type: string
+          example: El servicio gRPC de Equipos no se encuentra disponible momentáneamente.
+
+    GatewayTimeoutError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          example: EQUIPMENTS_SERVICE_TIMEOUT
+        message:
+          type: string
+          example: Tiempo de espera agotado al conectar con el servicio gRPC de Equipos.
+
+    BadGatewayError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          example: EQUIPMENTS_SERVICE_ERROR
+        message:
+          type: string
+          example: Ocurrió un error interno en el servicio de Equipos.
+
+    InternalServerError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          example: RENTAL_COMPENSATION_FAILED
+        message:
+          type: string
+          example: No se pudo completar la compensación del arriendo.
+
+    HealthResponse:
+      type: object
+      required:
+      - status
+      properties:
+        status:
+          type: string
+          example: ok
+          
+  securitySchemes:
+    APIKeyHeader:
+      type: apiKey
+      in: header
+      name: API-Key
+      description: |-
+        Se usan dos API Keys: el rol `readonly` permite consultas y el rol `admin`
+        permite además operaciones de escritura. Debe enviarse en el header `API-Key`.
