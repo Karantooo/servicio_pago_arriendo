@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -21,6 +21,28 @@ class Rental(Base):
     equipment_id = Column(Integer, nullable=False, index=True)
     start_date = Column(DateTime(timezone=True), nullable=False)
     end_date = Column(DateTime(timezone=True), nullable=False)
-    status = Column(String(20), nullable=False, default="ACTIVE")  # ACTIVE, COMPLETED, CANCELLED
+    status = Column(String(20), nullable=False, default="ACTIVE")  # ACTIVE, COMPLETED, CANCELLED, PENDING, FAILED, CANCELLING, RETURNING
 
     client = relationship("Client", back_populates="rentals")
+
+
+class Saga(Base):
+    __tablename__ = "sagas"
+
+    id = Column(String(36), primary_key=True)
+    rental_id = Column(Integer, ForeignKey("rentals.id"), nullable=False, index=True)
+    operation = Column(String(20), nullable=False)
+    status = Column(String(30), nullable=False, index=True)
+    current_step = Column(String(50), nullable=False)
+    error = Column(Text, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )

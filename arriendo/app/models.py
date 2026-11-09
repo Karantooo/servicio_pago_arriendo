@@ -64,9 +64,13 @@ class RentalRequest(BaseModel):
 
 
 class Status(Enum):
+    PENDING = 'PENDING'
     ACTIVE = 'ACTIVE'
     COMPLETED = 'COMPLETED'
     CANCELLED = 'CANCELLED'
+    FAILED = 'FAILED'
+    CANCELLING = 'CANCELLING'
+    RETURNING = 'RETURNING'
 
 
 class RentalResponse(BaseModel):
@@ -86,6 +90,17 @@ class RentalResponse(BaseModel):
         ..., description='Fecha de finalización', examples=['2026-09-25T18:00:00Z']
     )
     status: Status = Field(..., description='Estado del arriendo', examples=['ACTIVE'])
+
+
+class SagaResponse(BaseModel):
+    id: str
+    rentalId: int
+    operation: str
+    status: str
+    currentStep: str
+    error: str | None = None
+    createdAt: AwareDatetime
+    updatedAt: AwareDatetime
 
 
 class BadRequestError(BaseModel):
