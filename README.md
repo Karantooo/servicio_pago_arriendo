@@ -69,6 +69,12 @@ docker rm -v <id_contenedor>
 Esta última operación elimina el contenedor y los volúmenes anónimos asociados a él.
 
 
+## API v2 con Saga
+
+La API `v2` mantiene las rutas de arriendos bajo `/v2/rentals`. Su contrato está en `arriendo/openapiv2.yaml`; el `openapi.yaml` original no incluye cambios de v2. Las operaciones de escritura (`POST /v2/rentals`, `POST /{rentalId}/cancel` y `POST /{rentalId}/return`) son coordinadas por `app/saga_orchestrator.py` y registran el estado en la tabla `sagas`. Se puede consultar la Saga más reciente de un arriendo mediante `GET /v2/rentals/{rentalId}/saga`.
+
+Los estados `IN_DOUBT` y `COMPENSATION_FAILED` requieren revisión: la llamada remota pudo haber tenido éxito aunque la respuesta o la compensación no se hayan confirmado. La interfaz gRPC actual no recibe una clave idempotente para cada operación; por eso, esta implementación registra y expone esas situaciones, pero no reintenta automáticamente operaciones ambiguas.
+
 # Declaración de uso de inteligencia artificial
 
 El proyecto se desarrolló siguiendo la metodología *Spec-Driven Development* (SDD), en la cual la especificación es el artefacto central del desarrollo y la implementación se deriva de ella. En este flujo se utilizó **Claude Code** como asistente de generación de código, bajo el siguiente esquema de trabajo:

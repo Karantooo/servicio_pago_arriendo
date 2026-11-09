@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.routers.v1 import rentals, clients
+from app.routers.v2 import rentals as rentals_v2
 from app.database import engine, Base
 
 from app.models import HealthResponse
@@ -48,6 +49,7 @@ async def custom_http_exception_handler(request: Request, exc: StarletteHTTPExce
 # --- Routers ---
 app.include_router(clients.router)
 app.include_router(rentals.router)
+app.include_router(rentals_v2.router)
 
 @app.get('/health', response_model=HealthResponse, tags=['System'])
 def health_check() -> HealthResponse:
