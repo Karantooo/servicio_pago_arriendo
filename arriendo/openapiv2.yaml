@@ -11,6 +11,8 @@ tags:
   description: Gestión de clientes
 - name: Rentals
   description: Gestión de arriendos (consulta a Equipos vía gRPC)
+- name: Tariffs
+  description: Tarifas administradas por Arriendos
 - name: Health
   description: Estado del servicio
 security:
@@ -519,6 +521,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GatewayTimeoutError'
+  /v2/tariffs/{equipmentId}:
+    put:
+      tags:
+      - Tariffs
+      summary: Crear o actualizar la tarifa de un equipo
+      operationId: putTariffV2
+      parameters:
+      - name: equipmentId
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TariffRequest'
+      responses:
+        '200':
+          description: Tarifa guardada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TariffResponse'
+        '400':
+          description: Datos inválidos
+        '401':
+          description: No autenticado
+        '403':
+          description: Permisos insuficientes
   /v2/rentals:
     get:
       tags:
@@ -554,7 +588,7 @@ paths:
       tags:
       - Rentals
       summary: Crear arriendo con Saga
-      description: Reserva la unidad y coordina el arriendo mediante una Saga persistida.
+      description: Calcula los montos desde la tarifa del equipo, reserva la unidad e inicia el pago. La Saga queda pendiente hasta confirmar Webpay.
       operationId: createRentalV2
       requestBody:
         required: true
@@ -588,7 +622,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ForbiddenError'
         '404':
-          description: Cliente inexistente
+          description: Cliente o tarifa inexistente
           content:
             application/json:
               schema:
@@ -834,6 +868,36 @@ components:
         rentalHistory:
           $ref: '#/components/schemas/RentalHistory'
           
+    TariffRequest:
+      type: object
+      required:
+      - dailyRate
+      - deposit
+      properties:
+        dailyRate:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Precio por cada periodo de hasta 24 horas en CLP
+          example: 10000
+        deposit:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Garantía fija en CLP
+          example: 20000
+
+    TariffResponse:
+      allOf:
+      - $ref: '#/components/schemas/TariffRequest'
+      - type: object
+        required:
+        - equipmentId
+        properties:
+          equipmentId:
+            type: integer
+            minimum: 1
+
     RentalRequest:
       type: object
       required:

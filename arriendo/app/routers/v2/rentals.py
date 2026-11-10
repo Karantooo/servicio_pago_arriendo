@@ -18,11 +18,13 @@ from app.models import (
     NotAuthorizedError,
     NotFoundError,
     RentalRequest,
+    RentalCreationResponse,
     RentalResponse,
     SagaResponse,
     ServiceUnavailableError,
 )
 from app.redis import RentalCache, get_rental_cache
+from app.pricing import calculate_rental_amounts
 from app.saga_orchestrator import create_rental, finish_rental
 
 router = APIRouter(prefix="/v2/rentals", tags=["Rentals v2"])
@@ -31,7 +33,7 @@ CACHE_HEADER = "CACHE_STATUS"
 
 @router.post(
     "",
-    response_model=RentalResponse,
+    response_model=RentalCreationResponse,
     status_code=status.HTTP_201_CREATED,
     responses={
         400: {"model": BadRequestError},
@@ -50,7 +52,7 @@ def create_rental_endpoint(
     db: Session = Depends(get_db),
     cache: RentalCache = Depends(get_rental_cache),
     admin_auth: dict = Depends(admin_validation),
-) -> RentalResponse:
+) -> RentalCreationResponse:
     if rental_in.endDate <= rental_in.startDate:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -70,15 +72,23 @@ def create_rental_endpoint(
             },
         )
 
+    amount_rent, amount_deposit = calculate_rental_amounts(
+        db, rental_in.equipmentId, rental_in.startDate, rental_in.endDate
+    )
+
     try:
-        rental = create_rental(
+        rental, checkout = create_rental(
             db,
             rental_in.clientId,
             rental_in.equipmentId,
             rental_in.startDate,
             rental_in.endDate,
+            amount_rent,
+            amount_deposit,
         )
-        return _build_rental_response(rental)
+        return RentalCreationResponse(
+            rental=_build_rental_response(rental), payment=checkout
+        )
     finally:
         cache.invalidate()
 

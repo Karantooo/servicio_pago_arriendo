@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 
 from app import grpc_client
 from app.bd_models import Rental, Saga
+from app.models import PaymentCheckout
+from app.payments_client import PaymentStartRejected, PaymentStartUncertain, iniciar_cobro
 
 logger = logging.getLogger(__name__)
 
@@ -19,12 +21,16 @@ def create_rental(
     equipment_id: int,
     start_date: datetime,
     end_date: datetime,
-) -> Rental:
+    amount_rent: int,
+    amount_deposit: int,
+) -> tuple[Rental, PaymentCheckout]:
     rental = Rental(
         client_id=client_id,
         equipment_id=equipment_id,
         start_date=start_date,
         end_date=end_date,
+        amount_rent=amount_rent,
+        amount_deposit=amount_deposit,
         status="PENDING",
     )
     db.add(rental)
@@ -51,11 +57,6 @@ def create_rental(
         saga.status = "IN_PROGRESS"
         saga.current_step = "EQUIPMENT_RESERVED"
         db.commit()
-
-        rental.status = "ACTIVE"
-        saga.status = "COMPLETED"
-        saga.current_step = "DONE"
-        db.commit()
     except SQLAlchemyError as persistence_error:
         db.rollback()
         compensation_status = _compensate_create(
@@ -73,8 +74,101 @@ def create_rental(
                 "message": f"No se pudo persistir el resultado del arriendo. {message}",
             },
         ) from persistence_error
+
+    try:
+        saga.current_step = "START_PAYMENT"
+        db.commit()
+    except SQLAlchemyError as persistence_error:
+        db.rollback()
+        compensation_status = _compensate_create(
+            db, saga.id, rental.id, equipment_id, persistence_error
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "SAGA_PERSISTENCE_FAILED",
+                "message": (
+                    "No se pudo registrar el inicio del pago; la reserva fue compensada."
+                    if compensation_status == "COMPENSATED"
+                    else "No se pudo registrar el inicio del pago ni confirmar la compensación."
+                ),
+            },
+        ) from persistence_error
+    try:
+        checkout = iniciar_cobro(
+            rental_id=rental.id,
+            customer_id=client_id,
+            amount_rent=rental.amount_rent,
+            amount_deposit=rental.amount_deposit,
+            idempotency_key=saga.id,
+        )
+    except PaymentStartRejected as error:
+        _compensate_rejected_payment(db, saga.id, rental.id, equipment_id, error)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"code": "PAYMENT_REJECTED", "message": str(error)},
+        ) from error
+    except PaymentStartUncertain as error:
+        _record_payment_uncertainty(db, saga.id, error)
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail={"code": "PAYMENT_UNCERTAIN", "message": str(error)},
+        ) from error
+
+    try:
+        saga.payment_id = checkout.paymentId
+        saga.current_step = (
+            "WAITING_PAYMENT" if checkout.status == "PENDING" else "PAYMENT_CONFIRMED"
+        )
+        db.commit()
+    except SQLAlchemyError as persistence_error:
+        db.rollback()
+        _record_payment_uncertainty(db, saga.id, persistence_error)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "SAGA_PERSISTENCE_FAILED",
+                "message": "El pago pudo iniciarse; la Saga requiere conciliación.",
+            },
+        ) from persistence_error
     db.refresh(rental)
-    return rental
+    return rental, checkout
+
+
+def _record_payment_uncertainty(db: Session, saga_id: str, error: Exception) -> None:
+    db.rollback()
+    saga = db.get(Saga, saga_id)
+    if saga is None:
+        raise RuntimeError("No se encontró la Saga al registrar el pago incierto.")
+    saga.status = "IN_DOUBT"
+    saga.current_step = "START_PAYMENT"
+    saga.error = str(error)
+    db.commit()
+
+
+def _compensate_rejected_payment(
+    db: Session, saga_id: str, rental_id: int, equipment_id: int, error: Exception
+) -> None:
+    saga = db.get(Saga, saga_id)
+    saga.status = "COMPENSATING"
+    saga.current_step = "RELEASE_EQUIPMENT"
+    saga.error = str(error)
+    db.commit()
+    try:
+        grpc_client.liberar_unidad(equipment_id)
+    except HTTPException as release_error:
+        saga = db.get(Saga, saga_id)
+        saga.status = "COMPENSATION_FAILED"
+        saga.error = f"{error}; liberación fallida: {_http_error_message(release_error)}"
+        db.commit()
+        return
+
+    saga = db.get(Saga, saga_id)
+    rental = db.get(Rental, rental_id)
+    rental.status = "FAILED"
+    saga.status = "COMPENSATED"
+    saga.current_step = "COMPENSATION_COMPLETED"
+    db.commit()
 
 
 def finish_rental(db: Session, rental_id: int, final_status: str) -> Rental:

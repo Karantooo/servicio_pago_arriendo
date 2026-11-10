@@ -73,6 +73,10 @@ Esta última operación elimina el contenedor y los volúmenes anónimos asociad
 
 La API `v2` mantiene las rutas de arriendos bajo `/v2/rentals`. Su contrato está en `arriendo/openapiv2.yaml`; el `openapi.yaml` original no incluye cambios de v2. Las operaciones de escritura (`POST /v2/rentals`, `POST /{rentalId}/cancel` y `POST /{rentalId}/return`) son coordinadas por `app/saga_orchestrator.py` y registran el estado en la tabla `sagas`. Se puede consultar la Saga más reciente de un arriendo mediante `GET /v2/rentals/{rentalId}/saga`.
 
+Antes de crear un arriendo v2, un administrador debe registrar su tarifa con `PUT /v2/tariffs/{equipmentId}` y un JSON como `{"dailyRate": 10000, "deposit": 20000}`. Arriendos cobra cada periodo iniciado de hasta 24 horas a `dailyRate` y suma una garantía fija `deposit`. El cliente no envía montos en `POST /v2/rentals`; Arriendos los calcula y guarda una copia en el arriendo para mantener el importe ante cambios posteriores de tarifa. Si falta la tarifa, la creación responde `TARIFF_NOT_FOUND` sin reservar la unidad.
+
+Tras reservar la unidad, Arriendos inicia Pagos con la clave de idempotencia de la Saga. Una respuesta `PENDING` deja el arriendo pendiente y devuelve `rental` junto con `payment` (ID, URL y token de Webpay). Un rechazo confirmado de Pagos libera la unidad; un resultado incierto deja la Saga `IN_DOUBT` para conciliación. La confirmación final del pago y el paso de Entrega aún no están integrados.
+
 Los estados `IN_DOUBT` y `COMPENSATION_FAILED` requieren revisión: la llamada remota pudo haber tenido éxito aunque la respuesta o la compensación no se hayan confirmado. La interfaz gRPC actual no recibe una clave idempotente para cada operación; por eso, esta implementación registra y expone esas situaciones, pero no reintenta automáticamente operaciones ambiguas.
 
 # Declaración de uso de inteligencia artificial

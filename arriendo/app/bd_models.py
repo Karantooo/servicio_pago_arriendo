@@ -1,7 +1,19 @@
 from datetime import datetime, timezone
-from sqlalchemy import BigInteger, Column, Integer, String, DateTime, ForeignKey, Text
+from sqlalchemy import BigInteger, CheckConstraint, Column, Integer, String, DateTime, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from app.database import Base
+
+class RentalTariff(Base):
+    __tablename__ = "rental_tariffs"
+
+    equipment_id = Column(Integer, primary_key=True)
+    daily_rate = Column(BigInteger, nullable=False)
+    deposit = Column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("daily_rate > 0", name="ck_tariff_daily_rate_positive"),
+        CheckConstraint("deposit >= 0", name="ck_tariff_deposit_nonnegative"),
+    )
 
 class Client(Base):
     __tablename__ = "clients"
@@ -21,6 +33,8 @@ class Rental(Base):
     equipment_id = Column(Integer, nullable=False, index=True)
     start_date = Column(DateTime(timezone=True), nullable=False)
     end_date = Column(DateTime(timezone=True), nullable=False)
+    amount_rent = Column(BigInteger, nullable=True)
+    amount_deposit = Column(BigInteger, nullable=True)
     status = Column(String(20), nullable=False, default="ACTIVE")  # ACTIVE, COMPLETED, CANCELLED, PENDING, FAILED, CANCELLING, RETURNING
 
     client = relationship("Client", back_populates="rentals")
