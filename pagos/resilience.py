@@ -67,6 +67,10 @@ class CircuitBreaker:
             self.opened_at = time.monotonic()
             self.half_open_probe_in_flight = False
 
+    def release_probe(self) -> None:
+        if self.state == "HALF_OPEN":
+            self.half_open_probe_in_flight = False
+
 
 class Bulkhead:
     def __init__(self, capacity: int) -> None:

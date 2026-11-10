@@ -4,7 +4,7 @@ from pagos.models import utc_now
 from pagos.providers import get_provider
 from pagos.providers.base import ProviderUnavailable
 from pagos.resilience import bulkhead, circuit_breaker, invoke_provider_call
-from pagos.storage import payments
+from pagos.storage import get_payment_by_token, update_payment
 
 router = APIRouter()
 
@@ -51,7 +51,7 @@ async def handle_transbank_return(
             },
         )
 
-    payment = next((item for item in payments.values() if item.token == token), None)
+    payment = get_payment_by_token(token)
     if payment is None:
         raise HTTPException(
             status_code=404,
@@ -68,19 +68,19 @@ async def handle_transbank_return(
                 get_provider().confirm_transaction,
                 token,
             )
+            circuit_breaker.on_success()
             if confirmation.get("status") == "AUTHORIZED" and confirmation.get(
                 "response_code"
             ) == 0:
-                payment.status = "CHARGED"
+                payment = update_payment(payment.payment_id, status="CHARGED")
                 status = "CHARGED"
                 message = "Pago autorizado correctamente."
                 response_code = 0
             else:
-                payment.status = "FAILED"
+                payment = update_payment(payment.payment_id, status="FAILED")
                 status = "FAILED"
                 message = confirmation.get("message", "Pago rechazado.")
                 response_code = confirmation.get("response_code", 1)
-            circuit_breaker.on_success()
             return {
                 "payment_id": payment.payment_id,
                 "rental_id": payment.rental_id,
@@ -91,7 +91,7 @@ async def handle_transbank_return(
             }
         except ProviderUnavailable as exc:
             circuit_breaker.on_failure()
-            payment.status = "UNKNOWN"
+            update_payment(payment.payment_id, status="UNKNOWN")
             raise HTTPException(
                 status_code=503,
                 detail={
@@ -101,7 +101,7 @@ async def handle_transbank_return(
             ) from exc
         except TimeoutError as exc:
             circuit_breaker.on_failure()
-            payment.status = "UNKNOWN"
+            update_payment(payment.payment_id, status="UNKNOWN")
             raise HTTPException(
                 status_code=504,
                 detail={

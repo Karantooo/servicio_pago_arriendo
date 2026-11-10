@@ -612,6 +612,7 @@ components:
           enum:
             - PENDING
             - CHARGED
+            - UNKNOWN
           example: PENDING
         buy_order:
           type: string
@@ -623,6 +624,7 @@ components:
           example: SESSION-1001
         token:
           type: string
+          nullable: true
           description: |
             Token de la transacción entregado por Transbank.
             Se utiliza como valor del campo token_ws en el
@@ -631,6 +633,7 @@ components:
         redirect_url:
           type: string
           format: uri
+          nullable: true
           description: URL de Webpay Plus a la que se debe redirigir al usuario.
           example: https://webpay3gint.transbank.cl/webpayserver/initTransaction
         createdAt:
@@ -702,6 +705,7 @@ components:
           example: 1001
         amount_refunded:
           type: integer
+          nullable: true
           minimum: 0
           description: Monto reembolsado en CLP.
           example: 150000
@@ -715,6 +719,7 @@ components:
           example: REFUNDED
         provider_operation:
           type: string
+          nullable: true
           description: |
             Tipo de operación informado por Transbank.
             Puede corresponder a una reversa o anulación.

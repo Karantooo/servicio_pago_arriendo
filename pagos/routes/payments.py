@@ -5,8 +5,6 @@ from fastapi.responses import JSONResponse
 
 from pagos.models import (
     ChargeRequest,
-    PaymentRecord,
-    RefundRecord,
     RefundRequest,
     serialize_payment,
     serialize_refund,
@@ -16,21 +14,50 @@ from pagos.providers import get_provider
 from pagos.providers.base import ProviderUnavailable
 from pagos.resilience import bulkhead, circuit_breaker, invoke_provider_call
 from pagos.storage import (
-    next_payment_id,
-    next_refund_id,
-    operation_by_idempotency,
-    payments,
-    refund_by_idempotency,
-    refunds,
+    create_payment,
+    create_refund,
+    get_payment,
+    get_payment_by_idempotency_key,
+    get_refund_by_idempotency_key,
+    update_payment,
+    update_refund_result,
 )
 
 router = APIRouter()
 
 
+def _validate_reused_charge(payment, payload: ChargeRequest) -> None:
+    if (
+        payment.rental_id != payload.rental_id
+        or payment.customer_id != payload.customer_id
+        or payment.amount_total != payload.amount_total
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "IDEMPOTENCY_KEY_CONFLICT",
+                "message": "La clave de idempotencia ya se usó con otros datos.",
+            },
+        )
+
+
+def _validate_reused_refund(refund, payment_id: int, payload: RefundRequest) -> None:
+    if refund.payment_id != payment_id or refund.reason != payload.reason:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "IDEMPOTENCY_KEY_CONFLICT",
+                "message": "La clave de idempotencia ya se usó para otro reembolso.",
+            },
+        )
+
+
 @router.post("/payments/charge")
 async def charge_payment(
     payload: ChargeRequest,
-    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    idempotency_key: str = Header(
+        ..., alias="Idempotency-Key", min_length=1, max_length=255
+    ),
     request_id: str | None = Header(None, alias="X-Request-ID"),
 ):
     if not payload.amount_total:
@@ -42,10 +69,6 @@ async def charge_payment(
             },
         )
 
-    if idempotency_key in operation_by_idempotency:
-        payment = payments[operation_by_idempotency[idempotency_key]]
-        return JSONResponse(status_code=200, content=serialize_payment(payment))
-
     if payload.rental_id <= 0 or payload.customer_id <= 0:
         raise HTTPException(
             status_code=400,
@@ -55,39 +78,39 @@ async def charge_payment(
             },
         )
 
+    existing = get_payment_by_idempotency_key(idempotency_key)
+    if existing is not None:
+        _validate_reused_charge(existing, payload)
+        return JSONResponse(status_code=200, content=serialize_payment(existing))
+
     with bulkhead.acquire():
         circuit_breaker.before_call()
         try:
-            payment_id = next_payment_id()
-            payment = PaymentRecord(
-                payment_id=payment_id,
-                rental_id=payload.rental_id,
-                customer_id=payload.customer_id,
-                amount_total=payload.amount_total,
-                status="PENDING",
-                buy_order=f"RENT-{payload.rental_id}-{payment_id}",
-                session_id=f"SESSION-{payload.rental_id}",
-                token=f"token-{payment_id}",
-                redirect_url="https://webpay3gint.transbank.cl/webpayserver/initTransaction",
-                createdAt=utc_now(),
-            )
+            payment, created = create_payment(payload, idempotency_key)
+            if not created:
+                circuit_breaker.release_probe()
+                _validate_reused_charge(payment, payload)
+                return JSONResponse(status_code=200, content=serialize_payment(payment))
+
             provider_response = await invoke_provider_call(
                 get_provider().create_transaction,
-                payment_id,
+                payment.payment_id,
                 payload.rental_id,
                 payload.amount_total,
                 payload.customer_id,
             )
-            payment.token = provider_response["token"]
-            payment.session_id = provider_response["session_id"]
-            payment.buy_order = provider_response["buy_order"]
-            payment.redirect_url = provider_response["redirect_url"]
-            payments[payment_id] = payment
-            operation_by_idempotency[idempotency_key] = payment_id
             circuit_breaker.on_success()
+            payment = update_payment(
+                payment.payment_id,
+                token=provider_response["token"],
+                session_id=provider_response["session_id"],
+                buy_order=provider_response["buy_order"],
+                redirect_url=provider_response["redirect_url"],
+            )
             return JSONResponse(status_code=201, content=serialize_payment(payment))
         except ProviderUnavailable as exc:
             circuit_breaker.on_failure()
+            update_payment(payment.payment_id, status="UNKNOWN")
             raise HTTPException(
                 status_code=503,
                 detail={
@@ -97,6 +120,7 @@ async def charge_payment(
             ) from exc
         except TimeoutError as exc:
             circuit_breaker.on_failure()
+            update_payment(payment.payment_id, status="UNKNOWN")
             raise HTTPException(
                 status_code=504,
                 detail={
@@ -104,23 +128,11 @@ async def charge_payment(
                     "message": "Tiempo de espera agotado al comunicarse con Transbank.",
                 },
             ) from exc
-        except HTTPException:
-            circuit_breaker.on_failure()
-            raise
-        except Exception as exc:
-            circuit_breaker.on_failure()
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error": "PAYMENT_INTERNAL_ERROR",
-                    "message": "Error interno en el servicio de pagos.",
-                },
-            ) from exc
 
 
 @router.get("/payments/{payment_id}")
-async def get_payment(payment_id: int) -> Dict[str, Any]:
-    payment = payments.get(payment_id)
+async def get_payment_endpoint(payment_id: int) -> Dict[str, Any]:
+    payment = get_payment(payment_id)
     if payment is None:
         raise HTTPException(
             status_code=404,
@@ -133,19 +145,17 @@ async def get_payment(payment_id: int) -> Dict[str, Any]:
 async def refund_payment(
     payment_id: int,
     payload: RefundRequest,
-    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    idempotency_key: str = Header(
+        ..., alias="Idempotency-Key", min_length=1, max_length=255
+    ),
     request_id: str | None = Header(None, alias="X-Request-ID"),
 ):
-    payment = payments.get(payment_id)
+    payment = get_payment(payment_id)
     if payment is None:
         raise HTTPException(
             status_code=404,
             detail={"error": "PAYMENT_NOT_FOUND", "message": "Pago inexistente."},
         )
-
-    if idempotency_key in refund_by_idempotency:
-        refund = refunds[refund_by_idempotency[idempotency_key]]
-        return JSONResponse(status_code=200, content=serialize_refund(refund))
 
     if payload.rental_id != payment.rental_id:
         raise HTTPException(
@@ -156,7 +166,15 @@ async def refund_payment(
             },
         )
 
-    if payment.status in {"REFUNDED", "CANCELLED", "FAILED"}:
+    existing_refund = get_refund_by_idempotency_key(idempotency_key)
+    if existing_refund is not None:
+        _validate_reused_refund(existing_refund, payment_id, payload)
+        return JSONResponse(
+            status_code=200,
+            content=serialize_refund(existing_refund),
+        )
+
+    if payment.status in {"REFUNDED", "REFUND_PENDING", "CANCELLED", "FAILED"}:
         raise HTTPException(
             status_code=409,
             detail={
@@ -164,33 +182,66 @@ async def refund_payment(
                 "message": "El pago no se puede reembolsar en su estado actual.",
             },
         )
+    if not payment.token:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "REFUND_CONFLICT",
+                "message": "El pago todavía no tiene un token de proveedor para reembolsar.",
+            },
+        )
 
     with bulkhead.acquire():
         circuit_breaker.before_call()
         try:
+            refund, created = create_refund(
+                payment_id,
+                idempotency_key,
+                payload.reason,
+            )
+            if refund is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "error": "PAYMENT_NOT_FOUND",
+                        "message": "Pago inexistente.",
+                    },
+                )
+            if not created:
+                circuit_breaker.release_probe()
+                _validate_reused_refund(refund, payment_id, payload)
+                return JSONResponse(
+                    status_code=200,
+                    content=serialize_refund(refund),
+                )
+
             refund_response = await invoke_provider_call(
                 get_provider().refund_transaction,
                 payment.token,
                 payload.reason,
                 payment.amount_total,
             )
-            refund = RefundRecord(
-                refund_id=next_refund_id(),
-                payment_id=payment_id,
-                rental_id=payment.rental_id,
-                amount_refunded=refund_response["amount_refunded"],
-                status=refund_response["status"],
-                provider_operation=refund_response["provider_operation"],
-                message=refund_response["message"],
-                createdAt=utc_now(),
-            )
-            refunds[refund.refund_id] = refund
-            refund_by_idempotency[idempotency_key] = refund.refund_id
-            payment.status = "REFUNDED"
             circuit_breaker.on_success()
-            return JSONResponse(status_code=200, content=serialize_refund(refund))
+            refund = update_refund_result(
+                refund.refund_id,
+                status=refund_response["status"],
+                message=refund_response["message"],
+                provider_operation=refund_response["provider_operation"],
+                amount_refunded=refund_response["amount_refunded"],
+            )
+            return JSONResponse(
+                status_code=200,
+                content=serialize_refund(refund),
+            )
         except ProviderUnavailable as exc:
             circuit_breaker.on_failure()
+            refund = get_refund_by_idempotency_key(idempotency_key)
+            if refund is not None:
+                update_refund_result(
+                    refund.refund_id,
+                    status="UNKNOWN",
+                    message="No se pudo confirmar el resultado del reembolso.",
+                )
             raise HTTPException(
                 status_code=503,
                 detail={
@@ -200,6 +251,13 @@ async def refund_payment(
             ) from exc
         except TimeoutError as exc:
             circuit_breaker.on_failure()
+            refund = get_refund_by_idempotency_key(idempotency_key)
+            if refund is not None:
+                update_refund_result(
+                    refund.refund_id,
+                    status="UNKNOWN",
+                    message="Tiempo agotado; el resultado del reembolso es incierto.",
+                )
             raise HTTPException(
                 status_code=504,
                 detail={

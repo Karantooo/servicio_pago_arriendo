@@ -1,9 +1,19 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
+from pagos.database import initialize_database
 from pagos.routes.health import router as health_router
 from pagos.routes.mock_provider import router as mock_provider_router
 from pagos.routes.payments import router as payments_router
 from pagos.routes.transbank import router as transbank_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    initialize_database()
+    yield
+
 
 app = FastAPI(
     title="Payments API",
@@ -15,6 +25,7 @@ app = FastAPI(
             "description": "Servicio de pagos local",
         }
     ],
+    lifespan=lifespan,
 )
 
 app.include_router(health_router)

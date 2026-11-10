@@ -3,6 +3,8 @@ from typing import Any, Dict, Literal
 
 from pydantic import BaseModel, Field
 
+from pagos.db_models import Payment, Refund
+
 
 class ChargeRequest(BaseModel):
     rental_id: int
@@ -20,35 +22,14 @@ class RefundRequest(BaseModel):
     rental_id: int
 
 
-class PaymentRecord(BaseModel):
-    payment_id: int
-    rental_id: int
-    customer_id: int
-    amount_total: int
-    status: str
-    buy_order: str
-    session_id: str
-    token: str
-    redirect_url: str
-    createdAt: datetime
-
-
-class RefundRecord(BaseModel):
-    refund_id: int
-    payment_id: int
-    rental_id: int
-    amount_refunded: int
-    status: str
-    provider_operation: str
-    message: str
-    createdAt: datetime
-
-
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def serialize_payment(payment: PaymentRecord) -> Dict[str, Any]:
+def serialize_payment(payment: Payment) -> Dict[str, Any]:
+    created_at = payment.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
     return {
         "payment_id": payment.payment_id,
         "rental_id": payment.rental_id,
@@ -58,11 +39,14 @@ def serialize_payment(payment: PaymentRecord) -> Dict[str, Any]:
         "session_id": payment.session_id,
         "token": payment.token,
         "redirect_url": payment.redirect_url,
-        "createdAt": payment.createdAt.isoformat().replace("+00:00", "Z"),
+        "createdAt": created_at.isoformat().replace("+00:00", "Z"),
     }
 
 
-def serialize_refund(refund: RefundRecord) -> Dict[str, Any]:
+def serialize_refund(refund: Refund) -> Dict[str, Any]:
+    created_at = refund.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
     return {
         "refund_id": refund.refund_id,
         "payment_id": refund.payment_id,
@@ -71,5 +55,5 @@ def serialize_refund(refund: RefundRecord) -> Dict[str, Any]:
         "status": refund.status,
         "provider_operation": refund.provider_operation,
         "message": refund.message,
-        "createdAt": refund.createdAt.isoformat().replace("+00:00", "Z"),
+        "createdAt": created_at.isoformat().replace("+00:00", "Z"),
     }
