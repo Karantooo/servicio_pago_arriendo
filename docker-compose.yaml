@@ -43,6 +43,23 @@ services:
       arriendos-redis:
         condition: service_healthy
 
+  payments-api:
+    build:
+      context: ./pagos
+      dockerfile: Dockerfile
+    container_name: payments-api
+    restart: always
+    ports:
+      - "8003:8003"
+    environment:
+      PAYMENTS_PROVIDER: ${PAYMENTS_PROVIDER:-mock}
+      PAYMENTS_PROVIDER_MODE: ${PAYMENTS_PROVIDER_MODE:-NORMAL}
+      PAYMENTS_TIMEOUT_SECONDS: ${PAYMENTS_TIMEOUT_SECONDS:-5}
+      PAYMENTS_CIRCUIT_FAILURE_THRESHOLD: ${PAYMENTS_CIRCUIT_FAILURE_THRESHOLD:-3}
+      PAYMENTS_CIRCUIT_OPEN_SECONDS: ${PAYMENTS_CIRCUIT_OPEN_SECONDS:-15}
+      PAYMENTS_BULKHEAD_CAPACITY: ${PAYMENTS_BULKHEAD_CAPACITY:-5}
+      PAYMENTS_TRANSBANK_RETURN_URL: ${PAYMENTS_TRANSBANK_RETURN_URL:-http://localhost:8003/payments/transbank/return}
+
   arriendos-redis:
     image: redis:7-alpine
     container_name: arriendos-redis
