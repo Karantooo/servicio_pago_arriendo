@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import List
+from typing import List, Literal
 
 from pydantic import AwareDatetime, BaseModel, EmailStr, Field
 
@@ -90,6 +90,17 @@ class RentalResponse(BaseModel):
         ..., description='Fecha de finalización', examples=['2026-09-25T18:00:00Z']
     )
     status: Status = Field(..., description='Estado del arriendo', examples=['ACTIVE'])
+
+class PaymentCheckout(BaseModel):
+    paymentId: int
+    status: Literal["PENDING", "CHARGED"]
+    redirectUrl: str | None = None
+    token: str | None = None
+
+
+class RentalCreationResponse(BaseModel):
+    rental: RentalResponse
+    payment: PaymentCheckout
 
 
 class SagaResponse(BaseModel):

@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text
+from sqlalchemy import BigInteger, Column, Integer, String, DateTime, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -34,6 +34,7 @@ class Saga(Base):
     operation = Column(String(20), nullable=False)
     status = Column(String(30), nullable=False, index=True)
     current_step = Column(String(50), nullable=False)
+    payment_id = Column(BigInteger, nullable=True)
     error = Column(Text, nullable=True)
     created_at = Column(
         DateTime(timezone=True),
