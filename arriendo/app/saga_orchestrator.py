@@ -10,7 +10,13 @@ from sqlalchemy.orm import Session
 from app import grpc_client
 from app.bd_models import Rental, Saga
 from app.models import PaymentCheckout
-from app.payments_client import PaymentStartRejected, PaymentStartUncertain, iniciar_cobro
+from app.payments_client import (
+    PaymentLookupUncertain,
+    PaymentStartRejected,
+    PaymentStartUncertain,
+    consultar_pago,
+    iniciar_cobro,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +39,7 @@ def find_creation_by_key(
                 "message": "La clave de idempotencia ya se usó con otra solicitud.",
             },
         )
-    if saga.payment_id is None or saga.checkout_status is None:
+    if saga.status in {"FAILED", "COMPENSATED", "COMPENSATION_FAILED"} or saga.payment_id is None or saga.checkout_status is None:
         error_code = (
             "RENTAL_CREATION_UNCERTAIN"
             if saga.status in {"IN_DOUBT", "COMPENSATION_FAILED"}
@@ -179,8 +185,10 @@ def create_rental(
         saga.checkout_redirect_url = checkout.redirectUrl
         saga.checkout_token = checkout.token
         saga.current_step = (
-            "WAITING_PAYMENT" if checkout.status == "PENDING" else "PAYMENT_CONFIRMED"
+            "PAYMENT_CONFIRMED" if checkout.status == "CHARGED" else "WAITING_PAYMENT"
         )
+        if checkout.status not in {"PENDING", "CHARGED"}:
+            saga.status = "IN_DOUBT"
         db.commit()
     except SQLAlchemyError as persistence_error:
         db.rollback()
@@ -229,6 +237,191 @@ def _compensate_rejected_payment(
     rental.status = "FAILED"
     saga.status = "COMPENSATED"
     saga.current_step = "COMPENSATION_COMPLETED"
+    db.commit()
+
+
+def reconcile_payment(db: Session, rental_id: int) -> Saga:
+    rental = db.get(Rental, rental_id)
+    if rental is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "RENTAL_NOT_FOUND", "message": f"Arriendo {rental_id} no encontrado."},
+        )
+    saga = (
+        db.query(Saga)
+        .filter(Saga.rental_id == rental_id, Saga.operation == "CREATE")
+        .first()
+    )
+    if saga is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "SAGA_NOT_FOUND", "message": "No hay una Saga de creación para este arriendo."},
+        )
+    if saga.status in {"COMPENSATED", "COMPLETED"} or saga.current_step == "PAYMENT_CONFIRMED":
+        return saga
+    if saga.status in {"COMPENSATING", "COMPENSATION_FAILED", "FAILED"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "SAGA_REQUIRES_REVIEW", "message": "La Saga está compensando o requiere revisión."},
+        )
+    if saga.current_step not in {"START_PAYMENT", "WAITING_PAYMENT"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "PAYMENT_NOT_STARTED", "message": "La Saga aún no llegó al paso de pago."},
+        )
+
+    if saga.payment_id is None:
+        if saga.status != "IN_DOUBT":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "PAYMENT_START_IN_PROGRESS", "message": "El inicio del pago aún está en curso."},
+            )
+        try:
+            checkout = iniciar_cobro(
+                rental_id=rental.id,
+                customer_id=rental.client_id,
+                amount_rent=rental.amount_rent,
+                amount_deposit=rental.amount_deposit,
+                idempotency_key=saga.idempotency_key,
+                require_checkout=False,
+            )
+        except PaymentStartRejected as error:
+            _compensate_failed_payment(db, saga.id, rental.id, rental.equipment_id, error)
+            return db.get(Saga, saga.id)
+        except PaymentStartUncertain as error:
+            _mark_payment_in_doubt(db, saga.id, error)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"code": "PAYMENT_UNCERTAIN", "message": str(error)},
+            ) from error
+        recovered = db.execute(
+            update(Saga)
+            .where(
+                Saga.id == saga.id,
+                Saga.status == "IN_DOUBT",
+                Saga.current_step == "START_PAYMENT",
+                Saga.payment_id.is_(None),
+            )
+            .values(
+                payment_id=checkout.paymentId,
+                checkout_status=checkout.status,
+                checkout_redirect_url=checkout.redirectUrl,
+                checkout_token=checkout.token,
+                current_step="WAITING_PAYMENT",
+            )
+        ).rowcount
+        db.commit()
+        db.expire_all()
+        saga = db.get(Saga, saga.id)
+        if not recovered and saga.payment_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "PAYMENT_STATE_CHANGED", "message": "La Saga cambió durante la recuperación del pago."},
+            )
+        if saga.current_step == "PAYMENT_CONFIRMED" or saga.status in {"COMPENSATED", "COMPENSATING", "COMPENSATION_FAILED"}:
+            return saga
+
+    try:
+        payment = consultar_pago(saga.payment_id)
+    except PaymentLookupUncertain as error:
+        _mark_payment_in_doubt(db, saga.id, error)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "PAYMENT_UNCERTAIN", "message": str(error)},
+        ) from error
+
+    if payment.rental_id != rental.id or payment.amount_total != rental.amount_rent + rental.amount_deposit:
+        _mark_payment_in_doubt(db, saga.id, ValueError("El cobro no coincide con el arriendo."))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"code": "PAYMENT_MISMATCH", "message": "El cobro no coincide con el arriendo."},
+        )
+
+    if payment.status in {"FAILED", "CANCELLED"}:
+        _compensate_failed_payment(
+            db, saga.id, rental.id, rental.equipment_id,
+            ValueError(f"Pago {payment.status}"),
+        )
+        return db.get(Saga, saga.id)
+
+    if payment.status == "CHARGED":
+        db.execute(
+            update(Saga)
+            .where(
+                Saga.id == saga.id,
+                Saga.status.in_(["IN_PROGRESS", "IN_DOUBT"]),
+                Saga.current_step.in_(["START_PAYMENT", "WAITING_PAYMENT"]),
+            )
+            .values(
+                status="IN_PROGRESS", current_step="PAYMENT_CONFIRMED",
+                checkout_status="CHARGED", error=None,
+            )
+        )
+    else:
+        has_checkout = bool(payment.redirect_url and payment.token)
+        db.execute(
+            update(Saga)
+            .where(
+                Saga.id == saga.id,
+                Saga.status.in_(["IN_PROGRESS", "IN_DOUBT"]),
+                Saga.current_step.in_(["START_PAYMENT", "WAITING_PAYMENT"]),
+            )
+            .values(
+                status="IN_PROGRESS" if payment.status == "PENDING" and has_checkout else "IN_DOUBT",
+                current_step="WAITING_PAYMENT",
+                checkout_status=payment.status,
+                checkout_redirect_url=payment.redirect_url,
+                checkout_token=payment.token,
+                error=None if payment.status == "PENDING" and has_checkout else "El pago aún no tiene un resultado o checkout utilizable.",
+            )
+        )
+    db.commit()
+    return db.get(Saga, saga.id)
+
+
+def _mark_payment_in_doubt(db: Session, saga_id: str, error: Exception) -> None:
+    db.rollback()
+    db.execute(
+        update(Saga)
+        .where(
+            Saga.id == saga_id,
+            Saga.status.in_(["IN_PROGRESS", "IN_DOUBT"]),
+            Saga.current_step.in_(["START_PAYMENT", "WAITING_PAYMENT"]),
+        )
+        .values(status="IN_DOUBT", error=str(error))
+    )
+    db.commit()
+
+
+def _compensate_failed_payment(
+    db: Session, saga_id: str, rental_id: int, equipment_id: int, error: Exception
+) -> None:
+    claimed = db.execute(
+        update(Saga)
+        .where(
+            Saga.id == saga_id,
+            Saga.status.in_(["IN_PROGRESS", "IN_DOUBT"]),
+            Saga.current_step.in_(["START_PAYMENT", "WAITING_PAYMENT"]),
+        )
+        .values(status="COMPENSATING", current_step="RELEASE_EQUIPMENT", error=str(error))
+    ).rowcount
+    db.commit()
+    if not claimed:
+        return
+    try:
+        grpc_client.liberar_unidad(equipment_id)
+    except HTTPException as release_error:
+        saga = db.get(Saga, saga_id)
+        saga.status = "COMPENSATION_FAILED"
+        saga.error = f"{error}; liberación fallida: {_http_error_message(release_error)}"
+        db.commit()
+        return
+    saga = db.get(Saga, saga_id)
+    rental = db.get(Rental, rental_id)
+    rental.status = "FAILED"
+    saga.status = "COMPENSATED"
+    saga.current_step = "COMPENSATION_COMPLETED"
+    saga.checkout_status = "FAILED"
     db.commit()
 
 

@@ -93,7 +93,7 @@ class RentalResponse(BaseModel):
 
 class PaymentCheckout(BaseModel):
     paymentId: int
-    status: Literal["PENDING", "CHARGED"]
+    status: Literal["PENDING", "CHARGED", "FAILED", "CANCELLED", "UNKNOWN"]
     redirectUrl: str | None = None
     token: str | None = None
 

@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from app import payments_client
-from app.payments_client import PaymentStartRejected, PaymentStartUncertain
+from app.payments_client import PaymentLookupUncertain, PaymentStartRejected, PaymentStartUncertain
 
 
 def iniciar_cobro_de_prueba():
@@ -65,3 +65,34 @@ def test_timeout_deja_resultado_incierto(monkeypatch):
 
     with pytest.raises(PaymentStartUncertain):
         iniciar_cobro_de_prueba()
+
+
+def test_consultar_pago_traduce_estado(monkeypatch):
+    monkeypatch.setattr(
+        payments_client.httpx,
+        "get",
+        lambda *args, **kwargs: httpx.Response(
+            200,
+            json={
+                "payment_id": 501, "rental_id": 1001, "amount_total": 150000,
+                "status": "CHARGED", "redirect_url": None, "token": None,
+            },
+        ),
+    )
+    payment = payments_client.consultar_pago(501)
+    assert payment.status == "CHARGED"
+    assert payment.rental_id == 1001
+    assert payment.amount_total == 150000
+
+
+def test_consultar_pago_rechaza_identidad_inconsistente(monkeypatch):
+    monkeypatch.setattr(
+        payments_client.httpx,
+        "get",
+        lambda *args, **kwargs: httpx.Response(
+            200,
+            json={"payment_id": 999, "rental_id": 1001, "amount_total": 150000, "status": "CHARGED"},
+        ),
+    )
+    with pytest.raises(PaymentLookupUncertain):
+        payments_client.consultar_pago(501)

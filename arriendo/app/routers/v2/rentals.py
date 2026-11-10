@@ -26,7 +26,7 @@ from app.models import (
 )
 from app.redis import RentalCache, get_rental_cache
 from app.pricing import calculate_rental_amounts
-from app.saga_orchestrator import create_rental, find_creation_by_key, finish_rental
+from app.saga_orchestrator import create_rental, find_creation_by_key, finish_rental, reconcile_payment
 
 router = APIRouter(prefix="/v2/rentals", tags=["Rentals v2"])
 CACHE_HEADER = "CACHE_STATUS"
@@ -224,6 +224,35 @@ def get_latest_saga(
             },
         )
 
+    return _build_saga_response(saga)
+
+
+@router.post(
+    "/{rentalId}/reconcile-payment",
+    response_model=SagaResponse,
+    responses={
+        400: {"model": BadRequestError},
+        401: {"model": NotAuthorizedError},
+        403: {"model": ForbiddenError},
+        404: {"model": NotFoundError},
+        409: {"model": ConflictError},
+        502: {"model": BadGatewayError},
+        503: {"model": ServiceUnavailableError},
+    },
+)
+def reconcile_payment_endpoint(
+    rentalId: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    cache: RentalCache = Depends(get_rental_cache),
+    admin_auth: dict = Depends(admin_validation),
+) -> SagaResponse:
+    try:
+        return _build_saga_response(reconcile_payment(db, rentalId))
+    finally:
+        cache.invalidate(rentalId)
+
+
+def _build_saga_response(saga: Saga) -> SagaResponse:
     return SagaResponse(
         id=saga.id,
         rentalId=saga.rental_id,

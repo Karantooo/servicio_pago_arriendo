@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from app.bd_models import Rental, Saga
 from app.models import PaymentCheckout
-from app.payments_client import PaymentStartRejected, PaymentStartUncertain
+from app.payments_client import PaymentLookupUncertain, PaymentStartRejected, PaymentStartUncertain, PaymentState
 
 
 PAYLOAD = {
@@ -335,6 +335,173 @@ def test_v2_uncertain_payment_keeps_reservation(client, db_session, monkeypatch)
     assert released == []
     assert db_session.query(Rental).one().status == "PENDING"
     assert db_session.query(Saga).one().status == "IN_DOUBT"
+
+
+def test_v2_unknown_charge_is_not_confirmed(client, db_session, monkeypatch):
+    from app import saga_orchestrator
+
+    client_id = _create_client(client)
+    _create_tariff(client)
+    monkeypatch.setattr(saga_orchestrator.grpc_client, "reservar_unidad", lambda _: None)
+    monkeypatch.setattr(
+        saga_orchestrator,
+        "iniciar_cobro",
+        lambda **_: PaymentCheckout(paymentId=501, status="UNKNOWN"),
+    )
+
+    response = client.post(
+        "/v2/rentals", json={**PAYLOAD, "clientId": client_id},
+        headers=IDEMPOTENCY_HEADERS,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["payment"]["status"] == "UNKNOWN"
+    saga = db_session.query(Saga).one()
+    assert saga.status == "IN_DOUBT"
+    assert saga.current_step == "WAITING_PAYMENT"
+    assert db_session.query(Rental).one().status == "PENDING"
+
+
+def test_reconcile_does_not_repeat_charge_while_creation_is_running(
+    client, db_session, crear_arriendo, monkeypatch
+):
+    from app import saga_orchestrator
+
+    rental = crear_arriendo(status="PENDING")
+    saga = Saga(
+        id=str(uuid4()), rental_id=rental.id, operation="CREATE",
+        status="IN_PROGRESS", current_step="START_PAYMENT",
+        idempotency_key="pending-create",
+    )
+    db_session.add(saga)
+    db_session.commit()
+
+    def unexpected_charge(**_):
+        raise AssertionError("La conciliación no debe iniciar otro cobro aún")
+
+    monkeypatch.setattr(saga_orchestrator, "iniciar_cobro", unexpected_charge)
+    response = client.post(f"/v2/rentals/{rental.id}/reconcile-payment")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "PAYMENT_START_IN_PROGRESS"
+
+
+def _pending_payment(rental_id, status="PENDING", payment_id=501):
+    return PaymentState(
+        payment_id=payment_id,
+        rental_id=rental_id,
+        amount_total=80000,
+        status=status,
+        redirect_url="https://webpay.example/pagar",
+        token="token-501",
+    )
+
+
+def test_reconcile_confirmed_payment_waits_for_delivery(client, db_session, monkeypatch):
+    from app import saga_orchestrator
+
+    client_id = _create_client(client)
+    _create_tariff(client)
+    monkeypatch.setattr(saga_orchestrator.grpc_client, "reservar_unidad", lambda _: None)
+    monkeypatch.setattr(
+        saga_orchestrator, "iniciar_cobro",
+        lambda **_: PaymentCheckout(paymentId=501, status="PENDING", redirectUrl="https://webpay.example/pagar", token="token-501"),
+    )
+    created = client.post("/v2/rentals", json={**PAYLOAD, "clientId": client_id}, headers=IDEMPOTENCY_HEADERS)
+    rental_id = created.json()["rental"]["id"]
+    calls = []
+    monkeypatch.setattr(saga_orchestrator, "consultar_pago", lambda payment_id: calls.append(payment_id) or _pending_payment(rental_id, "CHARGED"))
+
+    first = client.post(f"/v2/rentals/{rental_id}/reconcile-payment")
+    second = client.post(f"/v2/rentals/{rental_id}/reconcile-payment")
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["currentStep"] == "PAYMENT_CONFIRMED"
+    assert calls == [501]
+    assert db_session.get(Rental, rental_id).status == "PENDING"
+
+
+def test_reconcile_failed_payment_releases_once(client, db_session, monkeypatch):
+    from app import saga_orchestrator
+
+    client_id = _create_client(client)
+    _create_tariff(client)
+    released = []
+    monkeypatch.setattr(saga_orchestrator.grpc_client, "reservar_unidad", lambda _: None)
+    monkeypatch.setattr(saga_orchestrator.grpc_client, "liberar_unidad", released.append)
+    monkeypatch.setattr(
+        saga_orchestrator, "iniciar_cobro",
+        lambda **_: PaymentCheckout(paymentId=501, status="PENDING", redirectUrl="https://webpay.example/pagar", token="token-501"),
+    )
+    created = client.post("/v2/rentals", json={**PAYLOAD, "clientId": client_id}, headers=IDEMPOTENCY_HEADERS)
+    rental_id = created.json()["rental"]["id"]
+    monkeypatch.setattr(saga_orchestrator, "consultar_pago", lambda _: _pending_payment(rental_id, "FAILED"))
+
+    first = client.post(f"/v2/rentals/{rental_id}/reconcile-payment")
+    second = client.post(f"/v2/rentals/{rental_id}/reconcile-payment")
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["status"] == "COMPENSATED"
+    assert released == [50]
+    assert db_session.get(Rental, rental_id).status == "FAILED"
+
+
+def test_reconcile_recovers_missing_payment_id_with_original_key(client, db_session, monkeypatch):
+    from app import saga_orchestrator
+
+    client_id = _create_client(client)
+    _create_tariff(client)
+    monkeypatch.setattr(saga_orchestrator.grpc_client, "reservar_unidad", lambda _: None)
+    sent = []
+
+    def charge(**kwargs):
+        sent.append(kwargs)
+        if len(sent) == 1:
+            raise PaymentStartUncertain("Timeout")
+        return PaymentCheckout(paymentId=501, status="PENDING", redirectUrl="https://webpay.example/pagar", token="token-501")
+
+    monkeypatch.setattr(saga_orchestrator, "iniciar_cobro", charge)
+    created = client.post("/v2/rentals", json={**PAYLOAD, "clientId": client_id}, headers=IDEMPOTENCY_HEADERS)
+    assert created.status_code == 504
+    rental_id = db_session.query(Rental).one().id
+    monkeypatch.setattr(saga_orchestrator, "consultar_pago", lambda _: _pending_payment(rental_id))
+
+    response = client.post(f"/v2/rentals/{rental_id}/reconcile-payment")
+
+    assert response.status_code == 200
+    assert response.json()["currentStep"] == "WAITING_PAYMENT"
+    assert sent[0]["idempotency_key"] == sent[1]["idempotency_key"]
+    assert sent[1]["require_checkout"] is False
+    assert db_session.query(Saga).one().payment_id == 501
+
+
+def test_reconcile_unknown_and_lookup_failure_keep_reservation(client, db_session, monkeypatch):
+    from app import saga_orchestrator
+
+    client_id = _create_client(client)
+    _create_tariff(client)
+    released = []
+    monkeypatch.setattr(saga_orchestrator.grpc_client, "reservar_unidad", lambda _: None)
+    monkeypatch.setattr(saga_orchestrator.grpc_client, "liberar_unidad", released.append)
+    monkeypatch.setattr(
+        saga_orchestrator, "iniciar_cobro",
+        lambda **_: PaymentCheckout(paymentId=501, status="PENDING", redirectUrl="https://webpay.example/pagar", token="token-501"),
+    )
+    created = client.post("/v2/rentals", json={**PAYLOAD, "clientId": client_id}, headers=IDEMPOTENCY_HEADERS)
+    rental_id = created.json()["rental"]["id"]
+    monkeypatch.setattr(saga_orchestrator, "consultar_pago", lambda _: _pending_payment(rental_id, "UNKNOWN"))
+    unknown = client.post(f"/v2/rentals/{rental_id}/reconcile-payment")
+    assert unknown.status_code == 200
+    assert unknown.json()["status"] == "IN_DOUBT"
+
+    def lookup_failure(_):
+        raise PaymentLookupUncertain("Timeout")
+
+    monkeypatch.setattr(saga_orchestrator, "consultar_pago", lookup_failure)
+    failure = client.post(f"/v2/rentals/{rental_id}/reconcile-payment")
+    assert failure.status_code == 503
+    assert released == []
+    assert db_session.get(Rental, rental_id).status == "PENDING"
 
 
 @pytest.mark.parametrize(

@@ -719,6 +719,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/NotFoundError'
+  /v2/rentals/{rentalId}/reconcile-payment:
+    post:
+      tags:
+      - Rentals
+      summary: Conciliar el cobro de un arriendo
+      description: Consulta el estado en Pagos. Si falta payment_id, recupera el cobro con la misma Idempotency-Key. Un pago aprobado deja la Saga esperando Entrega; un pago fallido libera Equipos. UNKNOWN conserva la reserva y deja la Saga en duda.
+      operationId: reconcileRentalPaymentV2
+      parameters:
+      - name: rentalId
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      responses:
+        '200':
+          description: Estado actualizado de la Saga
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SagaResponse'
+        '400':
+          description: Identificador inválido
+        '401':
+          description: No autenticado
+        '403':
+          description: Permisos insuficientes
+        '404':
+          description: Arriendo o Saga inexistente
+        '409':
+          description: La Saga no admite conciliación o requiere revisión
+        '502':
+          description: Los datos del cobro no coinciden con el arriendo
+        '503':
+          description: No fue posible confirmar el estado en Pagos; la Saga queda en duda
   /v2/rentals/{rentalId}/cancel:
     post:
       tags:
@@ -1002,6 +1037,9 @@ components:
           enum:
           - PENDING
           - CHARGED
+          - FAILED
+          - CANCELLED
+          - UNKNOWN
         redirectUrl:
           type: string
           format: uri

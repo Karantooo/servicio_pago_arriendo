@@ -1,4 +1,6 @@
 import os
+from dataclasses import dataclass
+from typing import Literal
 
 import httpx
 from pydantic import ValidationError
@@ -25,12 +27,66 @@ class PaymentStartUncertain(Exception):
     """No se pudo confirmar si Pagos inició el cobro."""
 
 
+class PaymentLookupUncertain(Exception):
+    """No se pudo confirmar el estado actual de un pago."""
+
+
+@dataclass(frozen=True)
+class PaymentState:
+    payment_id: int
+    rental_id: int
+    amount_total: int
+    status: Literal["PENDING", "CHARGED", "FAILED", "CANCELLED", "UNKNOWN"]
+    redirect_url: str | None
+    token: str | None
+
+
+def consultar_pago(payment_id: int) -> PaymentState:
+    try:
+        response = httpx.get(
+            f"{PAYMENTS_API_URL}/payments/{payment_id}",
+            timeout=PAYMENTS_TIMEOUT_SECONDS,
+        )
+    except httpx.RequestError as error:
+        raise PaymentLookupUncertain("No se recibió una respuesta de Pagos.") from error
+
+    if response.status_code != 200:
+        raise PaymentLookupUncertain(
+            f"Pagos respondió HTTP {response.status_code} al consultar el cobro."
+        )
+
+    try:
+        data = response.json()
+        state = PaymentState(
+            payment_id=int(data["payment_id"]),
+            rental_id=int(data["rental_id"]),
+            amount_total=int(data["amount_total"]),
+            status=data["status"],
+            redirect_url=data.get("redirect_url"),
+            token=data.get("token"),
+        )
+        if (
+            state.payment_id != payment_id
+            or state.payment_id <= 0
+            or state.rental_id <= 0
+            or state.amount_total < 0
+            or state.status not in {"PENDING", "CHARGED", "FAILED", "CANCELLED", "UNKNOWN"}
+        ):
+            raise ValueError("Respuesta de pago inválida")
+    except (ValueError, KeyError, TypeError) as error:
+        raise PaymentLookupUncertain(
+            "Pagos respondió, pero no se pudo interpretar el estado."
+        ) from error
+    return state
+
+
 def iniciar_cobro(
     rental_id: int,
     customer_id: int,
     amount_rent: int,
     amount_deposit: int,
     idempotency_key: str,
+    require_checkout: bool = True,
 ) -> PaymentCheckout:
     try:
         response = httpx.post(
@@ -73,7 +129,7 @@ def iniciar_cobro(
             "Pagos respondió, pero no se pudo interpretar el resultado."
         ) from error
 
-    if checkout.status == "PENDING" and (
+    if require_checkout and checkout.status == "PENDING" and (
         not checkout.redirectUrl or not checkout.token
     ):
         raise PaymentStartUncertain(
