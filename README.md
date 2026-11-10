@@ -75,6 +75,35 @@ La API `v2` mantiene las rutas de arriendos bajo `/v2/rentals`. Su contrato est�
 
 Los estados `IN_DOUBT` y `COMPENSATION_FAILED` requieren revisión: la llamada remota pudo haber tenido éxito aunque la respuesta o la compensación no se hayan confirmado. La interfaz gRPC actual no recibe una clave idempotente para cada operación; por eso, esta implementación registra y expone esas situaciones, pero no reintenta automáticamente operaciones ambiguas.
 
+## Servicio de Pagos y resiliencia
+
+El repositorio incluye el microservicio `pagos` con un contrato `pagos/open-api-pagos_transbank.yaml`
+
+- `pagos/main.py` crea la aplicación; `pagos/routes/` separa las rutas de pagos, retorno Transbank, salud y control del mock.
+- `pagos/models.py` contiene los modelos y serializadores; `pagos/storage.py` mantiene el almacenamiento actual en memoria.
+- `pagos/resilience.py` concentra timeout, Circuit Breaker y Bulkhead.
+- `pagos/providers/` contiene la interfaz/fábrica de proveedores, el mock y el adaptador de Transbank Webpay Plus.
+- `POST /payments/charge` con `Idempotency-Key` y reuso seguro.
+- `GET/POST /payments/transbank/return` para confirmar la transacción.
+- `POST /payments/{payment_id}/refund` con compensación idempotente.
+- `GET /payments/{payment_id}` para consulta.
+- `GET /health` para salud del servicio.
+- El proveedor se selecciona con `PAYMENTS_PROVIDER=mock` (predeterminado) o `PAYMENTS_PROVIDER=transbank`. El mock ofrece los modos `NORMAL`, `SLOW` y `DOWN`, modificables en caliente con `POST /payments/mock-provider/mode`.
+- El adaptador Transbank usa Webpay Plus en ambiente de integración. Para iniciar el flujo se configura `PAYMENTS_TRANSBANK_RETURN_URL` con una URL de retorno accesible para el navegador.
+- Circuit Breaker: umbral 3 fallos, ventana abierta 15 s.
+- Bulkhead: 5 operaciones simultáneas.
+- Timeout de 5 s entre Pagos y el proveedor (`PAYMENTS_PROVIDER_TIMEOUT_SECONDS`); Arriendos usa `PAYMENTS_TIMEOUT_SECONDS` para sus llamadas al servicio de Pagos.
+
+El almacenamiento de pagos es actualmente en memoria; los registros se pierden al reiniciar el contenedor.
+
+Para levantarlo junto con los otros servicios:
+
+```bash
+docker compose -f docker-compose.yaml up --build
+```
+
+La API de pagos queda expuesta en `http://localhost:8003`.
+
 # Declaración de uso de inteligencia artificial
 
 El proyecto se desarrolló siguiendo la metodología *Spec-Driven Development* (SDD), en la cual la especificación es el artefacto central del desarrollo y la implementación se deriva de ella. En este flujo se utilizó **Claude Code** como asistente de generación de código, bajo el siguiente esquema de trabajo:
