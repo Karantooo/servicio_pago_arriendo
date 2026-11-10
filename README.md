@@ -80,7 +80,8 @@ Los estados `IN_DOUBT` y `COMPENSATION_FAILED` requieren revisión: la llamada r
 El repositorio incluye el microservicio `pagos` con un contrato `pagos/open-api-pagos_transbank.yaml`
 
 - `pagos/main.py` crea la aplicación; `pagos/routes/` separa las rutas de pagos, retorno Transbank, salud y control del mock.
-- `pagos/models.py` contiene los modelos y serializadores; `pagos/storage.py` mantiene el almacenamiento actual en memoria.
+- `pagos/models.py` contiene los modelos de solicitud y serializadores; `pagos/db_models.py` define las entidades persistentes y `pagos/storage.py` concentra las consultas y transacciones de base de datos.
+- `pagos/database.py` configura SQLAlchemy; el servicio usa PostgreSQL en Docker y SQLite como opción local predeterminada.
 - `pagos/resilience.py` concentra timeout, Circuit Breaker y Bulkhead.
 - `pagos/providers/` contiene la interfaz/fábrica de proveedores, el mock y el adaptador de Transbank Webpay Plus.
 - `POST /payments/charge` con `Idempotency-Key` y reuso seguro.
@@ -94,7 +95,7 @@ El repositorio incluye el microservicio `pagos` con un contrato `pagos/open-api-
 - Bulkhead: 5 operaciones simultáneas.
 - Timeout de 5 s entre Pagos y el proveedor (`PAYMENTS_PROVIDER_TIMEOUT_SECONDS`); Arriendos usa `PAYMENTS_TIMEOUT_SECONDS` para sus llamadas al servicio de Pagos.
 
-El almacenamiento de pagos es actualmente en memoria; los registros se pierden al reiniciar el contenedor.
+Pagos persiste transacciones, reembolsos y claves de idempotencia en su propia base PostgreSQL (`payments-db`) y volumen (`payments_pg_data`). Los estados `UNKNOWN` se conservan para evitar que un reintento incierto inicie un segundo cobro o reembolso.
 
 Para levantarlo junto con los otros servicios:
 
