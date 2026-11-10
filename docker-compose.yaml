@@ -54,6 +54,7 @@ services:
     ports:
       - "8003:8003"
     environment:
+      PAYMENTS_DATABASE_URL: postgresql+psycopg://${PAYMENTS_DB_USER}:${PAYMENTS_DB_PASSWORD}@payments-db:5432/${PAYMENTS_DB_NAME}
       PAYMENTS_PROVIDER: ${PAYMENTS_PROVIDER:-mock}
       PAYMENTS_PROVIDER_MODE: ${PAYMENTS_PROVIDER_MODE:-NORMAL}
       PAYMENTS_PROVIDER_TIMEOUT_SECONDS: ${PAYMENTS_PROVIDER_TIMEOUT_SECONDS:-5}
@@ -61,6 +62,29 @@ services:
       PAYMENTS_CIRCUIT_OPEN_SECONDS: ${PAYMENTS_CIRCUIT_OPEN_SECONDS:-15}
       PAYMENTS_BULKHEAD_CAPACITY: ${PAYMENTS_BULKHEAD_CAPACITY:-5}
       PAYMENTS_TRANSBANK_RETURN_URL: ${PAYMENTS_TRANSBANK_RETURN_URL:-http://localhost:8003/payments/transbank/return}
+    depends_on:
+      payments-db:
+        condition: service_healthy
+
+  payments-db:
+    image: postgres:16-alpine
+    container_name: payments-db
+    restart: always
+    environment:
+      POSTGRES_DB: ${PAYMENTS_DB_NAME}
+      POSTGRES_USER: ${PAYMENTS_DB_USER}
+      POSTGRES_PASSWORD: ${PAYMENTS_DB_PASSWORD}
+    volumes:
+      - payments_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${PAYMENTS_DB_USER} -d ${PAYMENTS_DB_NAME}"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   arriendos-redis:
     image: redis:7-alpine
@@ -117,3 +141,4 @@ services:
 volumes:
   equipos_postgres_data:
   rentals_pg_data:
+  payments_pg_data:
