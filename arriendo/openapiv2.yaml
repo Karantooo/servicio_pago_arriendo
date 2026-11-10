@@ -1020,7 +1020,7 @@ components:
           $ref: '#/components/schemas/RentalResponse'
         payment:
           $ref: '#/components/schemas/PaymentCheckout'
-  
+
     SagaResponse:
       type: object
       required:

@@ -1,0 +1,7 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+sqlalchemy>=2.0.28
+psycopg[binary]>=3.1.0
+python-multipart>=0.0.9
+transbank-sdk>=5.0.0

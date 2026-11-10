@@ -1,0 +1,13 @@
+import os
+
+
+PROVIDER_NAME = os.getenv("PAYMENTS_PROVIDER", "mock").strip().lower()
+PROVIDER_MODE = os.getenv("PAYMENTS_PROVIDER_MODE", "NORMAL").upper()
+TIMEOUT_SECONDS = float(os.getenv("PAYMENTS_PROVIDER_TIMEOUT_SECONDS", "5"))
+CIRCUIT_FAILURE_THRESHOLD = int(os.getenv("PAYMENTS_CIRCUIT_FAILURE_THRESHOLD", "3"))
+CIRCUIT_OPEN_SECONDS = float(os.getenv("PAYMENTS_CIRCUIT_OPEN_SECONDS", "15"))
+BULKHEAD_CAPACITY = int(os.getenv("PAYMENTS_BULKHEAD_CAPACITY", "5"))
+TRANSBANK_RETURN_URL = os.getenv(
+    "PAYMENTS_TRANSBANK_RETURN_URL",
+    "http://localhost:8003/payments/transbank/return",
+)
