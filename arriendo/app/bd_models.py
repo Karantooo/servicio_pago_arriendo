@@ -48,7 +48,12 @@ class Saga(Base):
     operation = Column(String(20), nullable=False)
     status = Column(String(30), nullable=False, index=True)
     current_step = Column(String(50), nullable=False)
+    idempotency_key = Column(String(128), unique=True, nullable=True)
+    request_fingerprint = Column(String(64), nullable=True)
     payment_id = Column(BigInteger, nullable=True)
+    checkout_status = Column(String(20), nullable=True)
+    checkout_redirect_url = Column(Text, nullable=True)
+    checkout_token = Column(Text, nullable=True)
     error = Column(Text, nullable=True)
     created_at = Column(
         DateTime(timezone=True),

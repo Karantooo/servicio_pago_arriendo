@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 from sqlalchemy import update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import grpc_client
@@ -15,6 +15,53 @@ from app.payments_client import PaymentStartRejected, PaymentStartUncertain, ini
 logger = logging.getLogger(__name__)
 
 
+def find_creation_by_key(
+    db: Session, idempotency_key: str, request_fingerprint: str
+) -> tuple[Rental, PaymentCheckout] | None:
+    saga = (
+        db.query(Saga)
+        .filter(Saga.idempotency_key == idempotency_key, Saga.operation == "CREATE")
+        .first()
+    )
+    if saga is None:
+        return None
+    if saga.request_fingerprint != request_fingerprint:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "IDEMPOTENCY_KEY_REUSED",
+                "message": "La clave de idempotencia ya se usó con otra solicitud.",
+            },
+        )
+    if saga.payment_id is None or saga.checkout_status is None:
+        error_code = (
+            "RENTAL_CREATION_UNCERTAIN"
+            if saga.status in {"IN_DOUBT", "COMPENSATION_FAILED"}
+            else "RENTAL_CREATION_FAILED"
+            if saga.status in {"FAILED", "COMPENSATED"}
+            else "RENTAL_CREATION_PENDING"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": error_code,
+                "message": (
+                    f"El arriendo {saga.rental_id} quedó en el paso "
+                    f"{saga.current_step} (Saga {saga.id}); consulte su estado antes de reintentar."
+                ),
+            },
+        )
+    rental = db.get(Rental, saga.rental_id)
+    if rental is None:
+        raise RuntimeError("No se encontró el arriendo asociado a la clave de idempotencia.")
+    return rental, PaymentCheckout(
+        paymentId=saga.payment_id,
+        status=saga.checkout_status,
+        redirectUrl=saga.checkout_redirect_url,
+        token=saga.checkout_token,
+    )
+
+
 def create_rental(
     db: Session,
     client_id: int,
@@ -23,6 +70,8 @@ def create_rental(
     end_date: datetime,
     amount_rent: int,
     amount_deposit: int,
+    idempotency_key: str,
+    request_fingerprint: str,
 ) -> tuple[Rental, PaymentCheckout]:
     rental = Rental(
         client_id=client_id,
@@ -42,9 +91,18 @@ def create_rental(
         operation="CREATE",
         status="STARTED",
         current_step="RESERVE_EQUIPMENT",
+        idempotency_key=idempotency_key,
+        request_fingerprint=request_fingerprint,
     )
     db.add(saga)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = find_creation_by_key(db, idempotency_key, request_fingerprint)
+        if existing is None:
+            raise
+        return existing
     db.refresh(rental)
 
     try:
@@ -100,7 +158,7 @@ def create_rental(
             customer_id=client_id,
             amount_rent=rental.amount_rent,
             amount_deposit=rental.amount_deposit,
-            idempotency_key=saga.id,
+            idempotency_key=saga.idempotency_key,
         )
     except PaymentStartRejected as error:
         _compensate_rejected_payment(db, saga.id, rental.id, equipment_id, error)
@@ -117,6 +175,9 @@ def create_rental(
 
     try:
         saga.payment_id = checkout.paymentId
+        saga.checkout_status = checkout.status
+        saga.checkout_redirect_url = checkout.redirectUrl
+        saga.checkout_token = checkout.token
         saga.current_step = (
             "WAITING_PAYMENT" if checkout.status == "PENDING" else "PAYMENT_CONFIRMED"
         )

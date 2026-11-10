@@ -590,6 +590,16 @@ paths:
       summary: Crear arriendo con Saga
       description: Calcula los montos desde la tarifa del equipo, reserva la unidad e inicia el pago. La Saga queda pendiente hasta confirmar Webpay.
       operationId: createRentalV2
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        description: Clave única de esta solicitud. Debe reutilizarse al reintentar el mismo arriendo; una clave usada con otros datos produce 409.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^\S+$'
       requestBody:
         required: true
         content:
@@ -628,7 +638,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/NotFoundError'
         '409':
-          description: Conflicto al reservar la unidad
+          description: Conflicto al reservar, clave reutilizada con otros datos u operación original todavía en curso
           content:
             application/json:
               schema:

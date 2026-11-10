@@ -1,8 +1,9 @@
 import json
+from hashlib import sha256
 from datetime import datetime, timezone
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.auth import admin_validation, client_validation
@@ -25,7 +26,7 @@ from app.models import (
 )
 from app.redis import RentalCache, get_rental_cache
 from app.pricing import calculate_rental_amounts
-from app.saga_orchestrator import create_rental, finish_rental
+from app.saga_orchestrator import create_rental, find_creation_by_key, finish_rental
 
 router = APIRouter(prefix="/v2/rentals", tags=["Rentals v2"])
 CACHE_HEADER = "CACHE_STATUS"
@@ -49,10 +50,25 @@ CACHE_HEADER = "CACHE_STATUS"
 )
 def create_rental_endpoint(
     rental_in: RentalRequest,
+    idempotency_key: str = Header(
+        ..., alias="Idempotency-Key", min_length=1, max_length=128, pattern=r"^\S+$"
+    ),
     db: Session = Depends(get_db),
     cache: RentalCache = Depends(get_rental_cache),
     admin_auth: dict = Depends(admin_validation),
 ) -> RentalCreationResponse:
+    request_fingerprint = sha256(
+        json.dumps(
+            rental_in.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    existing = find_creation_by_key(db, idempotency_key, request_fingerprint)
+    if existing is not None:
+        rental, checkout = existing
+        return RentalCreationResponse(
+            rental=_build_rental_response(rental), payment=checkout
+        )
+
     if rental_in.endDate <= rental_in.startDate:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -85,6 +101,8 @@ def create_rental_endpoint(
             rental_in.endDate,
             amount_rent,
             amount_deposit,
+            idempotency_key,
+            request_fingerprint,
         )
         return RentalCreationResponse(
             rental=_build_rental_response(rental), payment=checkout
