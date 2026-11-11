@@ -9,7 +9,7 @@ from app.models import PaymentCheckout
 
 
 PAYMENTS_API_URL = os.getenv(
-    "PAYMENTS_API_URL", "http://payments:8003"
+    "PAYMENTS_API_URL", "http://payments-api:8003"
 ).rstrip("/")
 PAYMENTS_TIMEOUT_SECONDS = float(
     os.getenv("PAYMENTS_TIMEOUT_SECONDS", "3")
