@@ -230,7 +230,11 @@ paths:
 
       responses:
         '200':
-          description: Retorno procesado y resultado de la transacción registrado.
+          description: |
+            Retorno procesado. Si la confirmación ya está en curso o el pago
+            ya salió de PENDING, se devuelve el estado persistido sin repetir
+            la llamada a Transbank. Un resultado UNKNOWN requiere reconciliación
+            antes de otra confirmación.
           content:
             application/json:
               schema:
@@ -252,13 +256,6 @@ paths:
 
         '404':
           description: No se encontró una transacción asociada al token.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-        '409':
-          description: La transacción ya fue confirmada o presenta un conflicto de estado.
           content:
             application/json:
               schema:
@@ -660,15 +657,20 @@ components:
           example: 1001
         status:
           type: string
+          nullable: true
           description: Estado interno resultante de la confirmación.
           enum:
+            - CONFIRMING
             - CHARGED
             - FAILED
             - CANCELLED
             - UNKNOWN
+            - REFUND_PENDING
+            - REFUNDED
           example: CHARGED
         response_code:
           type: integer
+          nullable: true
           description: |
             Código de respuesta de autorización de Transbank.
             El valor 0 indica una autorización exitosa.

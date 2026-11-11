@@ -1,5 +1,6 @@
 from uuid import uuid4
 
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 
 from pagos.database import SessionLocal
@@ -24,6 +25,52 @@ def get_payment_by_idempotency_key(idempotency_key: str) -> Payment | None:
 def get_payment_by_token(token: str) -> Payment | None:
     with SessionLocal() as db:
         return db.query(Payment).filter(Payment.token == token).one_or_none()
+
+
+def claim_payment_confirmation(token: str) -> tuple[Payment | None, bool]:
+    with SessionLocal() as db:
+        result = db.execute(
+            update(Payment)
+            .where(
+                Payment.token == token,
+                Payment.status == "PENDING",
+            )
+            .values(status="CONFIRMING")
+        )
+        db.commit()
+        payment = db.query(Payment).filter(Payment.token == token).one_or_none()
+        return payment, result.rowcount == 1
+
+
+def complete_payment_confirmation(
+    payment_id: int,
+    *,
+    status: str,
+) -> Payment | None:
+    with SessionLocal() as db:
+        db.execute(
+            update(Payment)
+            .where(
+                Payment.payment_id == payment_id,
+                Payment.status == "CONFIRMING",
+            )
+            .values(status=status)
+        )
+        db.commit()
+        return db.get(Payment, payment_id)
+
+
+def mark_payment_confirmation_unknown(payment_id: int) -> None:
+    with SessionLocal() as db:
+        db.execute(
+            update(Payment)
+            .where(
+                Payment.payment_id == payment_id,
+                Payment.status == "CONFIRMING",
+            )
+            .values(status="UNKNOWN")
+        )
+        db.commit()
 
 
 def create_payment(
