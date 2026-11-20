@@ -185,7 +185,9 @@ def create_rental(
         saga.checkout_redirect_url = checkout.redirectUrl
         saga.checkout_token = checkout.token
         saga.current_step = (
-            "PAYMENT_CONFIRMED" if checkout.status == "CHARGED" else "WAITING_PAYMENT"
+            "WAITING_FOR_DELIVERY"
+            if checkout.status == "CHARGED"
+            else "WAITING_PAYMENT"
         )
         if checkout.status not in {"PENDING", "CHARGED"}:
             saga.status = "IN_DOUBT"
@@ -257,7 +259,10 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "SAGA_NOT_FOUND", "message": "No hay una Saga de creación para este arriendo."},
         )
-    if saga.status in {"COMPENSATED", "COMPLETED"} or saga.current_step == "PAYMENT_CONFIRMED":
+    if saga.status in {"COMPENSATED", "COMPLETED"} or saga.current_step in {
+        "PAYMENT_CONFIRMED",
+        "WAITING_FOR_DELIVERY",
+    }:
         return saga
     if saga.status in {"COMPENSATING", "COMPENSATION_FAILED", "FAILED"}:
         raise HTTPException(
@@ -318,7 +323,7 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={"code": "PAYMENT_STATE_CHANGED", "message": "La Saga cambió durante la recuperación del pago."},
             )
-        if saga.current_step == "PAYMENT_CONFIRMED" or saga.status in {"COMPENSATED", "COMPENSATING", "COMPENSATION_FAILED"}:
+        if saga.current_step in {"PAYMENT_CONFIRMED", "WAITING_FOR_DELIVERY"} or saga.status in {"COMPENSATED", "COMPENSATING", "COMPENSATION_FAILED"}:
             return saga
 
     try:
@@ -353,7 +358,7 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
                 Saga.current_step.in_(["START_PAYMENT", "WAITING_PAYMENT"]),
             )
             .values(
-                status="IN_PROGRESS", current_step="PAYMENT_CONFIRMED",
+                status="IN_PROGRESS", current_step="WAITING_FOR_DELIVERY",
                 checkout_status="CHARGED", error=None,
             )
         )
@@ -430,9 +435,19 @@ def finish_rental(db: Session, rental_id: int, final_status: str) -> Rental:
         "CANCELLING" if final_status == "CANCELLED" else "RETURNING"
     )
     operation = "CANCEL" if final_status == "CANCELLED" else "RETURN"
+    rental_before_update = db.get(Rental, rental_id)
+    if rental_before_update is None:
+        _raise_missing_or_inactive_rental(db, rental_id)
+    previous_status = rental_before_update.status
+    allowed_statuses = (
+        {"ACTIVE", "PENDING"} if final_status == "CANCELLED" else {"ACTIVE"}
+    )
+    if previous_status not in allowed_statuses:
+        _raise_missing_or_inactive_rental(db, rental_id)
+
     rental = db.execute(
         update(Rental)
-        .where(Rental.id == rental_id, Rental.status == "ACTIVE")
+        .where(Rental.id == rental_id, Rental.status == previous_status)
         .values(status=intermediate_status)
         .returning(Rental)
     ).scalar_one_or_none()
@@ -456,13 +471,26 @@ def finish_rental(db: Session, rental_id: int, final_status: str) -> Rental:
     try:
         grpc_client.liberar_unidad(rental.equipment_id)
     except HTTPException as error:
-        _record_remote_failure(db, saga.id, rental.id, error)
+        _record_remote_failure(
+            db, saga.id, rental.id, error, restore_status=previous_status
+        )
         raise
 
     try:
         rental.status = final_status
         saga.status = "COMPLETED"
         saga.current_step = "DONE"
+        if final_status == "CANCELLED":
+            creation_saga = (
+                db.query(Saga)
+                .filter(Saga.rental_id == rental_id, Saga.operation == "CREATE")
+                .order_by(Saga.created_at.desc(), Saga.id.desc())
+                .first()
+            )
+            if creation_saga is not None:
+                creation_saga.status = "COMPLETED"
+                creation_saga.current_step = "DONE"
+                creation_saga.error = None
         db.commit()
     except SQLAlchemyError as persistence_error:
         db.rollback()
@@ -471,7 +499,7 @@ def finish_rental(db: Session, rental_id: int, final_status: str) -> Rental:
             saga.id,
             rental_id,
             equipment_id,
-            intermediate_status,
+            previous_status,
             persistence_error,
         )
         message = (
@@ -495,6 +523,7 @@ def _record_remote_failure(
     saga_id: str,
     rental_id: int,
     error: HTTPException,
+    restore_status: str | None = None,
 ) -> None:
     db.rollback()
     saga = db.get(Saga, saga_id)
@@ -510,7 +539,7 @@ def _record_remote_failure(
         if saga.operation == "CREATE":
             rental.status = "FAILED"
         else:
-            rental.status = "ACTIVE"
+            rental.status = restore_status or "ACTIVE"
     db.commit()
 
 
@@ -557,7 +586,7 @@ def _compensate_finish(
     saga_id: str,
     rental_id: int,
     equipment_id: int,
-    intermediate_status: str,
+    previous_status: str,
     persistence_error: SQLAlchemyError,
 ) -> str:
     _mark_compensating(db, saga_id, persistence_error)
@@ -570,7 +599,7 @@ def _compensate_finish(
             rental_id,
             persistence_error,
             compensation_error,
-            rental_status=intermediate_status,
+            rental_status=previous_status,
         )
         return "COMPENSATION_FAILED"
 
@@ -578,7 +607,7 @@ def _compensate_finish(
     rental = db.get(Rental, rental_id)
     if saga is None or rental is None:
         raise RuntimeError("No se encontró la Saga o el arriendo tras la compensación.")
-    rental.status = "ACTIVE"
+    rental.status = previous_status
     saga.status = "COMPENSATED"
     saga.current_step = "COMPENSATION_COMPLETED"
     saga.error = str(persistence_error)

@@ -416,7 +416,7 @@ def test_reconcile_confirmed_payment_waits_for_delivery(client, db_session, monk
     second = client.post(f"/v2/rentals/{rental_id}/reconcile-payment")
 
     assert first.status_code == second.status_code == 200
-    assert first.json()["currentStep"] == "PAYMENT_CONFIRMED"
+    assert first.json()["currentStep"] == "WAITING_FOR_DELIVERY"
     assert calls == [501]
     assert db_session.get(Rental, rental_id).status == "PENDING"
 
