@@ -1,0 +1,1442 @@
+openapi: 3.0.3
+info:
+  description: |-
+    API REST para agendar y registrar la entrega de los arriendos. La entrega es un **retiro en tienda**: el cliente
+    va a buscar el equipo en la fecha agendada y, cuando lo retira, la entrega se marca como entregada.
+  title: API Entregas ArriendaPro
+  version: 1.0.0
+servers:
+- description: Entorno local (Docker Compose)
+  url: http://localhost:8081
+security:
+- APIKeyHeader: []
+tags:
+- description: Agendamiento y entrega de arriendos
+  name: Deliveries
+- description: Estado del servicio
+  name: Health
+paths:
+  /health:
+    get:
+      description: Endpoint público para el healthcheck de Docker. No depende de Arriendos
+        ni de la base de datos.
+      operationId: healthCheck
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+          description: El servicio está en ejecución
+      security: []
+      summary: Estado del servicio
+      tags:
+      - Health
+  /v1/deliveries:
+    get:
+      description: "Retorna entregas ordenadas por fecha agendada. Si no hay registros,\
+        \ retorna una lista vacía."
+      operationId: getAllDeliveries
+      parameters:
+      - description: Cantidad máxima de registros a retornar (1 a 100)
+        explode: true
+        in: query
+        name: limit
+        required: false
+        schema:
+          default: 20
+          maximum: 100
+          minimum: 1
+          type: integer
+        style: form
+      - description: Cantidad de registros a saltar (paginación)
+        explode: true
+        in: query
+        name: offset
+        required: false
+        schema:
+          default: 0
+          minimum: 0
+          type: integer
+        style: form
+      - explode: true
+        in: query
+        name: status
+        required: false
+        schema:
+          $ref: "#/components/schemas/DeliveryStatus"
+        style: form
+      - explode: true
+        in: query
+        name: paymentStatus
+        required: false
+        schema:
+          $ref: "#/components/schemas/PaymentStatus"
+        style: form
+      - description: Fecha agendada desde (inclusive)
+        explode: true
+        in: query
+        name: scheduledFrom
+        required: false
+        schema:
+          format: date-time
+          type: string
+        style: form
+      - description: Fecha agendada hasta (inclusive)
+        explode: true
+        in: query
+        name: scheduledTo
+        required: false
+        schema:
+          format: date-time
+          type: string
+        style: form
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: "#/components/schemas/DeliveryResponse"
+                type: array
+          description: Lista de entregas (puede ser vacía)
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BadRequestError"
+          description: Datos de entrada inválidos
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotAuthorizedError"
+          description: No autenticado
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForbiddenError"
+          description: Permisos insuficientes (requiere rol `readonly` o `admin`)
+      summary: Listar entregas
+      tags:
+      - Deliveries
+    post:
+      description: |-
+        Registra la entrega de un arriendo y la deja agendada (`SCHEDULED`) para la fecha indicada.
+        Se llama al momento de realizar el pago. Valida contra Arriendos que:
+        - el arriendo existe y `clientId` y `equipmentId` coinciden,
+        - el arriendo no está cancelado, finalizado ni fallido,
+        - `scheduledAt` es futura y no posterior al `endDate` del arriendo,
+        - si `paymentStatus` es `PAID`, la Saga del arriendo está esperando la Entrega,
+        - no existe ya una entrega para ese arriendo.
+      operationId: createDelivery
+      parameters:
+      - description: Clave única de la solicitud. Debe reutilizarse al reintentar
+          la misma creación; una clave usada con otros datos produce 409.
+        explode: false
+        in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          maxLength: 128
+          minLength: 1
+          pattern: ^\S+$
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeliveryRequest"
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryResponse"
+          description: Entrega creada y agendada
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BadRequestError"
+          description: Datos de entrada inválidos
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotAuthorizedError"
+          description: No autenticado
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForbiddenError"
+          description: Permisos insuficientes (requiere rol `admin`)
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotFoundError"
+          description: Arriendo inexistente en Arriendos
+        "409":
+          content:
+            application/json:
+              examples:
+                already_exists:
+                  summary: DELIVERY_ALREADY_EXISTS
+                  value:
+                    code: DELIVERY_ALREADY_EXISTS
+                    message: Ya existe una entrega agendada para este arriendo.
+              schema:
+                $ref: "#/components/schemas/ConflictError"
+          description: |-
+            Conflicto. Posibles códigos: DELIVERY_ALREADY_EXISTS, RENTAL_NOT_READY_FOR_DELIVERY,
+            RENTAL_DATA_MISMATCH, IDEMPOTENCY_KEY_REUSED o IDEMPOTENCY_IN_PROGRESS.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InternalServerError"
+          description: Error de persistencia local
+        "502":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BadGatewayError"
+          description: Respuesta inválida o inesperada del servicio de Arriendos
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceUnavailableError"
+          description: Servicio de Arriendos no disponible
+        "504":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayTimeoutError"
+          description: Timeout al comunicar con el servicio de Arriendos
+      summary: Crear y agendar una entrega
+      tags:
+      - Deliveries
+  /v1/deliveries/{deliveryId}:
+    get:
+      operationId: getDeliveryById
+      parameters:
+      - description: ID de la entrega
+        explode: false
+        in: path
+        name: deliveryId
+        required: true
+        schema:
+          minimum: 1
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryResponse"
+          description: Entrega encontrada
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BadRequestError"
+          description: Datos de entrada inválidos
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotAuthorizedError"
+          description: No autenticado
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForbiddenError"
+          description: Permisos insuficientes (requiere rol `readonly` o `admin`)
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotFoundError"
+          description: Recurso no encontrado
+      summary: Obtener una entrega
+      tags:
+      - Deliveries
+  /v1/rentals/{rentalId}/delivery:
+    get:
+      description: Retorna la entrega asociada al ID de arriendo (no consulta a Arriendos).
+      operationId: getDeliveryByRental
+      parameters:
+      - description: ID del arriendo en el servicio de Arriendos
+        explode: false
+        in: path
+        name: rentalId
+        required: true
+        schema:
+          minimum: 1
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryResponse"
+          description: Entrega encontrada
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BadRequestError"
+          description: Datos de entrada inválidos
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotAuthorizedError"
+          description: No autenticado
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForbiddenError"
+          description: Permisos insuficientes (requiere rol `readonly` o `admin`)
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotFoundError"
+          description: El arriendo no tiene una entrega registrada
+      summary: Obtener la entrega de un arriendo
+      tags:
+      - Deliveries
+  /v1/deliveries/{deliveryId}/events:
+    get:
+      description: "Retorna la trazabilidad (agendamiento, reagendamientos, pago y\
+        \ entrega), del más antiguo al más reciente."
+      operationId: getDeliveryEvents
+      parameters:
+      - description: ID de la entrega
+        explode: false
+        in: path
+        name: deliveryId
+        required: true
+        schema:
+          minimum: 1
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: "#/components/schemas/DeliveryEvent"
+                type: array
+          description: Eventos de la entrega
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BadRequestError"
+          description: Datos de entrada inválidos
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotAuthorizedError"
+          description: No autenticado
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForbiddenError"
+          description: Permisos insuficientes (requiere rol `readonly` o `admin`)
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotFoundError"
+          description: Recurso no encontrado
+      summary: Historial de eventos de una entrega
+      tags:
+      - Deliveries
+  /v1/deliveries/{deliveryId}/schedule:
+    put:
+      description: Cambia la fecha de retiro. Solo permitido mientras la entrega está
+        `SCHEDULED`. Aplican las mismas reglas de fecha que al crearla (futura y no
+        posterior al fin del arriendo); para validarlas consulta Arriendos.
+      operationId: rescheduleDelivery
+      parameters:
+      - description: ID de la entrega
+        explode: false
+        in: path
+        name: deliveryId
+        required: true
+        schema:
+          minimum: 1
+          type: integer
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RescheduleRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryResponse"
+          description: Entrega reagendada
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BadRequestError"
+          description: Datos de entrada inválidos
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotAuthorizedError"
+          description: No autenticado
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForbiddenError"
+          description: Permisos insuficientes (requiere rol `admin`)
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotFoundError"
+          description: Recurso no encontrado
+        "409":
+          content:
+            application/json:
+              examples:
+                invalid_state_transition:
+                  value:
+                    code: INVALID_STATE_TRANSITION
+                    message: La entrega no está en un estado que permita esta operación.
+              schema:
+                $ref: "#/components/schemas/ConflictError"
+          description: "Transición inválida (INVALID_STATE_TRANSITION): el estado\
+            \ actual de la entrega no permite la operación"
+        "502":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BadGatewayError"
+          description: Respuesta inválida o inesperada del servicio de Arriendos
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceUnavailableError"
+          description: Servicio de Arriendos no disponible
+        "504":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayTimeoutError"
+          description: Timeout al comunicar con el servicio de Arriendos
+      summary: Reagendar una entrega
+      tags:
+      - Deliveries
+  /v1/deliveries/{deliveryId}/mark-paid:
+    post:
+      description: |-
+        Pasa `paymentStatus` de `UNPAID` a `PAID`. Es idempotente: si ya estaba `PAID`, responde 200 sin cambios.
+        No se permite sobre entregas `CANCELLED`.
+      operationId: markDeliveryPaid
+      parameters:
+      - description: ID de la entrega
+        explode: false
+        in: path
+        name: deliveryId
+        required: true
+        schema:
+          minimum: 1
+          type: integer
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MarkPaidRequest"
+        required: false
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryResponse"
+          description: Entrega pagada
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BadRequestError"
+          description: Datos de entrada inválidos
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotAuthorizedError"
+          description: No autenticado
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForbiddenError"
+          description: Permisos insuficientes (requiere rol `admin`)
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotFoundError"
+          description: Recurso no encontrado
+        "409":
+          content:
+            application/json:
+              examples:
+                invalid_state_transition:
+                  value:
+                    code: INVALID_STATE_TRANSITION
+                    message: La entrega no está en un estado que permita esta operación.
+              schema:
+                $ref: "#/components/schemas/ConflictError"
+          description: "Transición inválida (INVALID_STATE_TRANSITION): el estado\
+            \ actual de la entrega no permite la operación"
+      summary: Marcar la entrega como pagada
+      tags:
+      - Deliveries
+  /v1/deliveries/{deliveryId}/deliver:
+    post:
+      description: |-
+        Solo desde `SCHEDULED` y con `paymentStatus = PAID`; pasa a `DELIVERED` y guarda `deliveredAt`.
+        Luego notifica a Arriendos por REST (`PUT /v2/rentals/{rentalId}/delivery-status` con `DELIVERED`),
+        lo que activa el arriendo. Si la notificación falla, la entrega queda `DELIVERED` con
+        `rentalSyncStatus = SYNC_FAILED` y se responde 502, 503 o 504; se reintenta con `reconcile-rental`.
+      operationId: deliverDelivery
+      parameters:
+      - description: ID de la entrega
+        explode: false
+        in: path
+        name: deliveryId
+        required: true
+        schema:
+          minimum: 1
+          type: integer
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeliverRequest"
+        required: false
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryResponse"
+          description: Entrega registrada y Arriendos notificado
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BadRequestError"
+          description: Datos de entrada inválidos
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotAuthorizedError"
+          description: No autenticado
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForbiddenError"
+          description: Permisos insuficientes (requiere rol `admin`)
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotFoundError"
+          description: Recurso no encontrado
+        "409":
+          content:
+            application/json:
+              examples:
+                payment_required:
+                  summary: PAYMENT_REQUIRED
+                  value:
+                    code: PAYMENT_REQUIRED
+                    message: La entrega está por pagar; debe quedar pagada antes de
+                      entregarse.
+              schema:
+                $ref: "#/components/schemas/ConflictError"
+          description: Transición inválida (INVALID_STATE_TRANSITION) o pago pendiente
+            (PAYMENT_REQUIRED).
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InternalServerError"
+          description: Error de persistencia local
+        "502":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BadGatewayError"
+          description: Respuesta inválida o inesperada del servicio de Arriendos
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceUnavailableError"
+          description: Servicio de Arriendos no disponible
+        "504":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayTimeoutError"
+          description: Timeout al comunicar con el servicio de Arriendos
+      summary: Registrar la entrega (el cliente retiró el equipo)
+      tags:
+      - Deliveries
+  /v1/deliveries/{deliveryId}/cancel:
+    post:
+      description: Solo desde `SCHEDULED`. Notifica a Arriendos con `CANCELLED`.
+      operationId: cancelDelivery
+      parameters:
+      - description: ID de la entrega
+        explode: false
+        in: path
+        name: deliveryId
+        required: true
+        schema:
+          minimum: 1
+          type: integer
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CancelRequest"
+        required: false
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryResponse"
+          description: Entrega cancelada
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BadRequestError"
+          description: Datos de entrada inválidos
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotAuthorizedError"
+          description: No autenticado
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForbiddenError"
+          description: Permisos insuficientes (requiere rol `admin`)
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotFoundError"
+          description: Recurso no encontrado
+        "409":
+          content:
+            application/json:
+              examples:
+                invalid_state_transition:
+                  value:
+                    code: INVALID_STATE_TRANSITION
+                    message: La entrega no está en un estado que permita esta operación.
+              schema:
+                $ref: "#/components/schemas/ConflictError"
+          description: "Transición inválida (INVALID_STATE_TRANSITION): el estado\
+            \ actual de la entrega no permite la operación"
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InternalServerError"
+          description: Error de persistencia local
+        "502":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BadGatewayError"
+          description: Respuesta inválida o inesperada del servicio de Arriendos
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceUnavailableError"
+          description: Servicio de Arriendos no disponible
+        "504":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayTimeoutError"
+          description: Timeout al comunicar con el servicio de Arriendos
+      summary: Cancelar una entrega
+      tags:
+      - Deliveries
+  /v1/deliveries/{deliveryId}/reconcile-rental:
+    post:
+      description: |-
+        Para entregas con `rentalSyncStatus = SYNC_FAILED`. Reenvía a Arriendos el último resultado
+        (idempotente) y, si Arriendos responde, deja `rentalSyncStatus = SYNCED`.
+      operationId: reconcileDeliveryRental
+      parameters:
+      - description: ID de la entrega
+        explode: false
+        in: path
+        name: deliveryId
+        required: true
+        schema:
+          minimum: 1
+          type: integer
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryResponse"
+          description: Sincronización exitosa
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BadRequestError"
+          description: Datos de entrada inválidos
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotAuthorizedError"
+          description: No autenticado
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForbiddenError"
+          description: Permisos insuficientes (requiere rol `admin`)
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotFoundError"
+          description: Recurso no encontrado
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConflictError"
+          description: No hay resultado pendiente de sincronizar (NOTHING_TO_RECONCILE)
+        "502":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BadGatewayError"
+          description: Respuesta inválida o inesperada del servicio de Arriendos
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceUnavailableError"
+          description: Servicio de Arriendos no disponible
+        "504":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewayTimeoutError"
+          description: Timeout al comunicar con el servicio de Arriendos
+      summary: Reintentar sincronización con Arriendos
+      tags:
+      - Deliveries
+components:
+  parameters:
+    Limit:
+      description: Cantidad máxima de registros a retornar (1 a 100)
+      explode: true
+      in: query
+      name: limit
+      required: false
+      schema:
+        default: 20
+        maximum: 100
+        minimum: 1
+        type: integer
+      style: form
+    Offset:
+      description: Cantidad de registros a saltar (paginación)
+      explode: true
+      in: query
+      name: offset
+      required: false
+      schema:
+        default: 0
+        minimum: 0
+        type: integer
+      style: form
+    DeliveryId:
+      description: ID de la entrega
+      explode: false
+      in: path
+      name: deliveryId
+      required: true
+      schema:
+        minimum: 1
+        type: integer
+      style: simple
+    IdempotencyKey:
+      description: Clave única de la solicitud. Debe reutilizarse al reintentar la
+        misma creación; una clave usada con otros datos produce 409.
+      explode: false
+      in: header
+      name: Idempotency-Key
+      required: true
+      schema:
+        maxLength: 128
+        minLength: 1
+        pattern: ^\S+$
+        type: string
+      style: simple
+  responses:
+    BadRequest:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/BadRequestError"
+      description: Datos de entrada inválidos
+    Unauthorized:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/NotAuthorizedError"
+      description: No autenticado
+    ForbiddenRead:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ForbiddenError"
+      description: Permisos insuficientes (requiere rol `readonly` o `admin`)
+    ForbiddenAdmin:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ForbiddenError"
+      description: Permisos insuficientes (requiere rol `admin`)
+    NotFound:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/NotFoundError"
+      description: Recurso no encontrado
+    InvalidTransition:
+      content:
+        application/json:
+          examples:
+            invalid_state_transition:
+              value:
+                code: INVALID_STATE_TRANSITION
+                message: La entrega no está en un estado que permita esta operación.
+          schema:
+            $ref: "#/components/schemas/ConflictError"
+      description: "Transición inválida (INVALID_STATE_TRANSITION): el estado actual\
+        \ de la entrega no permite la operación"
+    InternalError:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/InternalServerError"
+      description: Error de persistencia local
+    BadGateway:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/BadGatewayError"
+      description: Respuesta inválida o inesperada del servicio de Arriendos
+    ServiceUnavailable:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ServiceUnavailableError"
+      description: Servicio de Arriendos no disponible
+    GatewayTimeout:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GatewayTimeoutError"
+      description: Timeout al comunicar con el servicio de Arriendos
+  schemas:
+    DeliveryStatus:
+      description: |-
+        Estado de la entrega:
+        - SCHEDULED: agendada, esperando que el cliente retire el equipo.
+        - DELIVERED: entregada (el cliente retiró el equipo).
+        - CANCELLED: cancelada.
+      enum:
+      - SCHEDULED
+      - DELIVERED
+      - CANCELLED
+      example: SCHEDULED
+      title: DeliveryStatus
+      type: string
+    PaymentStatus:
+      description: |-
+        Estado de pago de la entrega:
+        - PAID: pagada.
+        - UNPAID: por pagar.
+      enum:
+      - PAID
+      - UNPAID
+      example: PAID
+      title: PaymentStatus
+      type: string
+    RentalSyncStatus:
+      description: |-
+        Estado de sincronización del resultado con Arriendos:
+        - NOT_REQUIRED: aún no hay resultado final que informar.
+        - PENDING_SYNC: notificación en curso.
+        - SYNCED: Arriendos confirmó el resultado.
+        - SYNC_FAILED: Arriendos no respondió; usar reconcile-rental.
+      enum:
+      - NOT_REQUIRED
+      - PENDING_SYNC
+      - SYNCED
+      - SYNC_FAILED
+      example: NOT_REQUIRED
+      title: RentalSyncStatus
+      type: string
+    DeliveryRequest:
+      example:
+        rentalId: 1
+        clientId: 101
+        equipmentId: 50
+        scheduledAt: 2026-09-20T10:00:00Z
+        paymentStatus: PAID
+        paymentId: 9001
+        notes: notes
+      properties:
+        rentalId:
+          description: ID del arriendo en Arriendos
+          example: 1
+          format: int32
+          maximum: 2147483647
+          minimum: 1
+          title: rentalId
+          type: integer
+        clientId:
+          description: ID del cliente; debe coincidir con el del arriendo
+          example: 101
+          format: int32
+          maximum: 2147483647
+          minimum: 1
+          title: clientId
+          type: integer
+        equipmentId:
+          description: ID del equipo; debe coincidir con el del arriendo
+          example: 50
+          format: int32
+          maximum: 2147483647
+          minimum: 1
+          title: equipmentId
+          type: integer
+        scheduledAt:
+          description: Fecha y hora agendada para el retiro
+          example: 2026-09-20T10:00:00Z
+          format: date-time
+          title: scheduledAt
+          type: string
+        paymentStatus:
+          $ref: "#/components/schemas/PaymentStatus"
+        paymentId:
+          description: "ID del cobro en Pagos, si la entrega se crea ya pagada"
+          example: 9001
+          format: int64
+          nullable: true
+          title: paymentId
+          type: integer
+        notes:
+          description: Observaciones del agendamiento
+          maxLength: 300
+          title: notes
+          type: string
+      required:
+      - clientId
+      - equipmentId
+      - paymentStatus
+      - rentalId
+      - scheduledAt
+      title: DeliveryRequest
+      type: object
+    DeliveryResponse:
+      example:
+        id: 1
+        rentalId: 1
+        clientId: 101
+        equipmentId: 50
+        status: SCHEDULED
+        paymentStatus: PAID
+        paymentId: 9001
+        scheduledAt: 2026-09-20T10:00:00Z
+        deliveredAt: 2000-01-23T04:56:07.000+00:00
+        receivedBy: receivedBy
+        notes: notes
+        cancelReason: cancelReason
+        rentalSyncStatus: NOT_REQUIRED
+        createdAt: 2026-09-16T22:00:00Z
+        updatedAt: 2026-09-16T22:00:00Z
+      properties:
+        id:
+          example: 1
+          format: int32
+          title: id
+          type: integer
+        rentalId:
+          example: 1
+          title: rentalId
+          type: integer
+        clientId:
+          example: 101
+          title: clientId
+          type: integer
+        equipmentId:
+          example: 50
+          title: equipmentId
+          type: integer
+        status:
+          $ref: "#/components/schemas/DeliveryStatus"
+        paymentStatus:
+          $ref: "#/components/schemas/PaymentStatus"
+        paymentId:
+          example: 9001
+          format: int64
+          nullable: true
+          title: paymentId
+          type: integer
+        scheduledAt:
+          description: Fecha agendada para el retiro
+          example: 2026-09-20T10:00:00Z
+          format: date-time
+          title: scheduledAt
+          type: string
+        deliveredAt:
+          description: Fecha real en que el cliente retiró el equipo; solo en estado
+            DELIVERED
+          format: date-time
+          nullable: true
+          title: deliveredAt
+          type: string
+        receivedBy:
+          description: Persona que retiró el equipo
+          nullable: true
+          title: receivedBy
+          type: string
+        notes:
+          nullable: true
+          title: notes
+          type: string
+        cancelReason:
+          nullable: true
+          title: cancelReason
+          type: string
+        rentalSyncStatus:
+          $ref: "#/components/schemas/RentalSyncStatus"
+        createdAt:
+          example: 2026-09-16T22:00:00Z
+          format: date-time
+          title: createdAt
+          type: string
+        updatedAt:
+          example: 2026-09-16T22:00:00Z
+          format: date-time
+          title: updatedAt
+          type: string
+      required:
+      - clientId
+      - createdAt
+      - equipmentId
+      - id
+      - paymentStatus
+      - rentalId
+      - rentalSyncStatus
+      - scheduledAt
+      - status
+      - updatedAt
+      title: DeliveryResponse
+      type: object
+    DeliveryEvent:
+      example:
+        id: 0
+        deliveryId: 6
+        type: SCHEDULED
+        detail: Reagendada del 20/09 al 22/09
+        createdAt: 2000-01-23T04:56:07.000+00:00
+      properties:
+        id:
+          format: int64
+          title: id
+          type: integer
+        deliveryId:
+          title: deliveryId
+          type: integer
+        type:
+          enum:
+          - SCHEDULED
+          - RESCHEDULED
+          - PAID
+          - DELIVERED
+          - CANCELLED
+          title: type
+          type: string
+        detail:
+          example: Reagendada del 20/09 al 22/09
+          nullable: true
+          title: detail
+          type: string
+        createdAt:
+          format: date-time
+          title: createdAt
+          type: string
+      required:
+      - createdAt
+      - deliveryId
+      - id
+      - type
+      title: DeliveryEvent
+      type: object
+    RescheduleRequest:
+      example:
+        scheduledAt: 2026-09-22T15:00:00Z
+        reason: reason
+      properties:
+        scheduledAt:
+          example: 2026-09-22T15:00:00Z
+          format: date-time
+          title: scheduledAt
+          type: string
+        reason:
+          maxLength: 300
+          title: reason
+          type: string
+      required:
+      - scheduledAt
+      title: RescheduleRequest
+      type: object
+    MarkPaidRequest:
+      example:
+        paymentId: 9001
+      properties:
+        paymentId:
+          description: ID del cobro en Pagos
+          example: 9001
+          format: int64
+          title: paymentId
+          type: integer
+      title: MarkPaidRequest
+      type: object
+    DeliverRequest:
+      example:
+        receivedBy: Ana Pérez
+        notes: notes
+      properties:
+        receivedBy:
+          description: Nombre de quien retira el equipo
+          example: Ana Pérez
+          maxLength: 100
+          title: receivedBy
+          type: string
+        notes:
+          maxLength: 300
+          title: notes
+          type: string
+      title: DeliverRequest
+      type: object
+    CancelRequest:
+      example:
+        reason: El cliente canceló el arriendo
+      properties:
+        reason:
+          example: El cliente canceló el arriendo
+          maxLength: 300
+          title: reason
+          type: string
+      title: CancelRequest
+      type: object
+    ArriendosDeliveryStatusNotification:
+      description: |-
+        Cuerpo que Entregas envía a Arriendos en `PUT /v2/rentals/{rentalId}/delivery-status`.
+        Arriendos debe tratarlo de forma idempotente por `deliveryId` + `status`.
+      properties:
+        deliveryId:
+          example: 1
+          type: integer
+        status:
+          enum:
+          - DELIVERED
+          - CANCELLED
+          type: string
+        reason:
+          nullable: true
+          type: string
+        occurredAt:
+          example: 2026-09-20T10:15:00Z
+          format: date-time
+          type: string
+      required:
+      - deliveryId
+      - occurredAt
+      - status
+      type: object
+    BadRequestError:
+      example:
+        code: BAD_REQUEST
+        message: El cuerpo de la solicitud no cumple con las validaciones requeridas.
+      properties:
+        code:
+          example: BAD_REQUEST
+          title: code
+          type: string
+        message:
+          example: El cuerpo de la solicitud no cumple con las validaciones requeridas.
+          title: message
+          type: string
+      required:
+      - code
+      - message
+      title: BadRequestError
+      type: object
+    NotAuthorizedError:
+      example:
+        code: UNAUTHORIZED
+        message: "Token de autenticación faltante, inválido o expirado."
+      properties:
+        code:
+          example: UNAUTHORIZED
+          title: code
+          type: string
+        message:
+          example: "Token de autenticación faltante, inválido o expirado."
+          title: message
+          type: string
+      required:
+      - code
+      - message
+      title: NotAuthorizedError
+      type: object
+    ForbiddenError:
+      example:
+        code: FORBIDDEN
+        message: El usuario autenticado no posee los permisos necesarios para realizar
+          esta acción.
+      properties:
+        code:
+          example: FORBIDDEN
+          title: code
+          type: string
+        message:
+          example: El usuario autenticado no posee los permisos necesarios para realizar
+            esta acción.
+          title: message
+          type: string
+      required:
+      - code
+      - message
+      title: ForbiddenError
+      type: object
+    NotFoundError:
+      example:
+        code: RESOURCE_NOT_FOUND
+        message: El recurso solicitado no existe en el sistema.
+      properties:
+        code:
+          example: RESOURCE_NOT_FOUND
+          title: code
+          type: string
+        message:
+          example: El recurso solicitado no existe en el sistema.
+          title: message
+          type: string
+      required:
+      - code
+      - message
+      title: NotFoundError
+      type: object
+    ConflictError:
+      example:
+        code: INVALID_STATE_TRANSITION
+        message: La entrega no está en un estado que permita esta operación.
+      properties:
+        code:
+          description: |-
+            Motivo del conflicto:
+            - INVALID_STATE_TRANSITION: el estado actual no permite la operación.
+            - DELIVERY_ALREADY_EXISTS: ya existe una entrega para el arriendo.
+            - PAYMENT_REQUIRED: la entrega está por pagar y no puede entregarse.
+            - RENTAL_NOT_READY_FOR_DELIVERY: el arriendo o su Saga no están en el estado requerido.
+            - RENTAL_DATA_MISMATCH: clientId o equipmentId no coinciden con Arriendos.
+            - NOTHING_TO_RECONCILE: no hay resultado pendiente de sincronizar.
+            - IDEMPOTENCY_KEY_REUSED: la clave se usó con otros datos.
+            - IDEMPOTENCY_IN_PROGRESS: la operación original sigue en curso.
+          enum:
+          - INVALID_STATE_TRANSITION
+          - DELIVERY_ALREADY_EXISTS
+          - PAYMENT_REQUIRED
+          - RENTAL_NOT_READY_FOR_DELIVERY
+          - RENTAL_DATA_MISMATCH
+          - NOTHING_TO_RECONCILE
+          - IDEMPOTENCY_KEY_REUSED
+          - IDEMPOTENCY_IN_PROGRESS
+          example: INVALID_STATE_TRANSITION
+          title: code
+          type: string
+        message:
+          example: La entrega no está en un estado que permita esta operación.
+          title: message
+          type: string
+      required:
+      - code
+      - message
+      title: ConflictError
+      type: object
+    InternalServerError:
+      example:
+        code: DELIVERY_PERSISTENCE_ERROR
+        message: No se pudo guardar el estado de la entrega.
+      properties:
+        code:
+          example: DELIVERY_PERSISTENCE_ERROR
+          title: code
+          type: string
+        message:
+          example: No se pudo guardar el estado de la entrega.
+          title: message
+          type: string
+      required:
+      - code
+      - message
+      title: InternalServerError
+      type: object
+    BadGatewayError:
+      example:
+        code: RENTALS_SERVICE_ERROR
+        message: El servicio de Arriendos respondió con un error o con datos inesperados.
+      properties:
+        code:
+          example: RENTALS_SERVICE_ERROR
+          title: code
+          type: string
+        message:
+          example: El servicio de Arriendos respondió con un error o con datos inesperados.
+          title: message
+          type: string
+      required:
+      - code
+      - message
+      title: BadGatewayError
+      type: object
+    ServiceUnavailableError:
+      example:
+        code: RENTALS_SERVICE_UNAVAILABLE
+        message: El servicio de Arriendos no se encuentra disponible momentáneamente.
+      properties:
+        code:
+          example: RENTALS_SERVICE_UNAVAILABLE
+          title: code
+          type: string
+        message:
+          example: El servicio de Arriendos no se encuentra disponible momentáneamente.
+          title: message
+          type: string
+      required:
+      - code
+      - message
+      title: ServiceUnavailableError
+      type: object
+    GatewayTimeoutError:
+      example:
+        code: RENTALS_SERVICE_TIMEOUT
+        message: Tiempo de espera agotado al comunicar con el servicio de Arriendos.
+      properties:
+        code:
+          example: RENTALS_SERVICE_TIMEOUT
+          title: code
+          type: string
+        message:
+          example: Tiempo de espera agotado al comunicar con el servicio de Arriendos.
+          title: message
+          type: string
+      required:
+      - code
+      - message
+      title: GatewayTimeoutError
+      type: object
+    HealthResponse:
+      example:
+        status: ok
+      properties:
+        status:
+          example: ok
+          title: status
+          type: string
+      required:
+      - status
+      title: HealthResponse
+      type: object
+  securitySchemes:
+    APIKeyHeader:
+      description: |-
+        Se usan dos API Keys: el rol `readonly` permite consultas y el rol `admin`
+        permite además operaciones de escritura. Debe enviarse en el header `API-Key`.
+        Arriendos usa una key `admin` para llamar a Entregas, y Entregas una key `admin` para llamar a Arriendos.
+      in: header
+      name: API-Key
+      type: apiKey
+x-arriendos-dependencies:
+  baseUrl: http://arriendos:8080
+  consumes:
+  - method: GET
+    path: "/v2/rentals/{rentalId}"
+    purpose: "Validar existencia, estado, clientId, equipmentId y fechas del arriendo."
+  - method: GET
+    path: "/v2/rentals/{rentalId}/saga"
+    purpose: Verificar que la Saga CREATE está esperando la Entrega (solo al crear
+      una entrega PAID).
+  - method: PUT
+    path: "/v2/rentals/{rentalId}/delivery-status"
+    purpose: Informar que la entrega fue DELIVERED o CANCELLED. Endpoint a implementar
+      en Arriendos.
+    body: ArriendosDeliveryStatusNotification
+  timeoutSeconds: 5
+  headers:
+  - "API-Key (rol admin, configurado por variable de entorno)"
