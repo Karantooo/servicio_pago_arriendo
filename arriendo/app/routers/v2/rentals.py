@@ -1,18 +1,22 @@
+import logging
 import json
 from hashlib import sha256
 from datetime import datetime, timezone
 from typing import List
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response, status
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.auth import admin_validation, client_validation
 from app.bd_models import Client, Rental, Saga
+from app.bd_models import RentalDeliveryNotification
 from app.database import get_db
 from app.models import (
     BadGatewayError,
     BadRequestError,
     ConflictError,
+    DeliveryStatusNotification,
     ForbiddenError,
     GatewayTimeoutError,
     InternalServerError,
@@ -30,6 +34,7 @@ from app.saga_orchestrator import create_rental, find_creation_by_key, finish_re
 
 router = APIRouter(prefix="/v2/rentals", tags=["Rentals v2"])
 CACHE_HEADER = "CACHE_STATUS"
+logger = logging.getLogger(__name__)
 
 
 @router.post(
@@ -225,6 +230,182 @@ def get_latest_saga(
         )
 
     return _build_saga_response(saga)
+
+
+@router.put(
+    "/{rentalId}/delivery-status",
+    response_model=RentalResponse,
+    responses={
+        400: {"model": BadRequestError},
+        401: {"model": NotAuthorizedError},
+        403: {"model": ForbiddenError},
+        404: {"model": NotFoundError},
+        409: {"model": ConflictError},
+        500: {"model": InternalServerError},
+        502: {"model": BadGatewayError},
+        503: {"model": ServiceUnavailableError},
+        504: {"model": GatewayTimeoutError},
+    },
+)
+def notify_delivery_status(
+    notification: DeliveryStatusNotification,
+    rentalId: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    cache: RentalCache = Depends(get_rental_cache),
+    admin_auth: dict = Depends(admin_validation),
+) -> RentalResponse:
+    try:
+        rental = db.get(Rental, rentalId)
+        if rental is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": "RENTAL_NOT_FOUND",
+                    "message": f"Arriendo {rentalId} no encontrado.",
+                },
+            )
+
+        existing = (
+            db.query(RentalDeliveryNotification)
+            .filter(
+                RentalDeliveryNotification.delivery_id == notification.deliveryId,
+                RentalDeliveryNotification.status == notification.status,
+            )
+            .first()
+        )
+        if existing is not None:
+            if existing.rental_id != rentalId:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "DELIVERY_DATA_MISMATCH",
+                        "message": "El ID de entrega ya está asociado a otro arriendo.",
+                    },
+                )
+            return _build_rental_response(rental)
+
+        opposite_status = (
+            "CANCELLED" if notification.status == "DELIVERED" else "DELIVERED"
+        )
+        previous_event = (
+            db.query(RentalDeliveryNotification)
+            .filter(
+                RentalDeliveryNotification.delivery_id == notification.deliveryId,
+                RentalDeliveryNotification.status == opposite_status,
+            )
+            .first()
+        )
+        if previous_event is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "INVALID_STATE_TRANSITION",
+                    "message": "La entrega ya fue notificada con un estado final diferente.",
+                },
+            )
+
+        if notification.status == "DELIVERED":
+            if rental.status == "PENDING":
+                saga = (
+                    db.query(Saga)
+                    .filter(Saga.rental_id == rentalId, Saga.operation == "CREATE")
+                    .order_by(Saga.created_at.desc(), Saga.id.desc())
+                    .first()
+                )
+                if (
+                    saga is None
+                    or saga.status not in {"IN_PROGRESS", "COMPLETED"}
+                    or saga.current_step
+                    not in {"PAYMENT_CONFIRMED", "WAITING_FOR_DELIVERY"}
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "code": "RENTAL_NOT_READY_FOR_DELIVERY",
+                            "message": "El arriendo aún no está listo para activar su entrega.",
+                        },
+                    )
+                rental.status = "ACTIVE"
+                saga.status = "COMPLETED"
+                saga.current_step = "DONE"
+                saga.error = None
+            elif rental.status != "ACTIVE":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "INVALID_STATE_TRANSITION",
+                        "message": f"No se puede activar un arriendo en estado {rental.status}.",
+                    },
+                )
+        elif rental.status in {"PENDING", "ACTIVE"}:
+            finish_rental(db, rentalId, "CANCELLED")
+            rental = db.get(Rental, rentalId)
+        elif rental.status != "CANCELLED":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "INVALID_STATE_TRANSITION",
+                    "message": f"No se puede cancelar un arriendo en estado {rental.status}.",
+                },
+            )
+
+        db.add(
+            RentalDeliveryNotification(
+                rental_id=rentalId,
+                delivery_id=notification.deliveryId,
+                status=notification.status,
+                reason=notification.reason,
+                occurred_at=notification.occurredAt,
+            )
+        )
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            duplicate = (
+                db.query(RentalDeliveryNotification)
+                .filter(
+                    RentalDeliveryNotification.delivery_id
+                    == notification.deliveryId,
+                    RentalDeliveryNotification.status == notification.status,
+                )
+                .first()
+            )
+            if duplicate is not None and duplicate.rental_id == rentalId:
+                rental = db.get(Rental, rentalId)
+                return _build_rental_response(rental)
+            if duplicate is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "DELIVERY_DATA_MISMATCH",
+                        "message": "El ID de entrega ya está asociado a otro arriendo.",
+                    },
+                )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "INVALID_STATE_TRANSITION",
+                    "message": "La notificación de Entregas se procesó simultáneamente.",
+                },
+            )
+        except SQLAlchemyError as error:
+            db.rollback()
+            logger.exception(
+                "No se pudo persistir la notificación de entrega para el arriendo %s.",
+                rentalId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": "RENTAL_PERSISTENCE_ERROR",
+                    "message": "No se pudo persistir la notificación de Entregas.",
+                },
+            ) from error
+        db.refresh(rental)
+        return _build_rental_response(rental)
+    finally:
+        cache.invalidate(rentalId)
 
 
 @router.post(
