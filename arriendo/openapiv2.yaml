@@ -719,6 +719,53 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/NotFoundError'
+  /v2/rentals/{rentalId}/delivery-status:
+    put:
+      tags:
+      - Rentals
+      summary: Recibir el resultado de Entregas
+      description: |-
+        Operación interna invocada por Entregas. Se procesa idempotentemente por `deliveryId` y `status`.
+        `DELIVERED` activa un arriendo pendiente; `CANCELLED` cancela el arriendo y libera la unidad mediante una Saga.
+      operationId: notifyDeliveryStatusV2
+      parameters:
+      - name: rentalId
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryStatusNotification'
+      responses:
+        '200':
+          description: Resultado de Entregas aplicado (o ya procesado)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RentalResponse'
+        '400':
+          description: Datos de entrada inválidos
+        '401':
+          description: No autenticado
+        '403':
+          description: Permisos insuficientes
+        '404':
+          description: Arriendo no encontrado
+        '409':
+          description: Estado incompatible o evento de entrega conflictivo
+        '500':
+          description: No se pudo persistir el cambio o la Saga
+        '502':
+          description: Error informado por Equipos al liberar la unidad
+        '503':
+          description: Equipos no disponible
+        '504':
+          description: Timeout al comunicar con Equipos
   /v2/rentals/{rentalId}/reconcile-payment:
     post:
       tags:
@@ -832,6 +879,28 @@ paths:
                 $ref: '#/components/schemas/InternalServerError'
 components:
   schemas:
+    DeliveryStatusNotification:
+      type: object
+      description: Evento de resultado enviado por Entregas; idempotente por deliveryId y status.
+      required:
+      - deliveryId
+      - status
+      - occurredAt
+      properties:
+        deliveryId:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum:
+          - DELIVERED
+          - CANCELLED
+        reason:
+          type: string
+          nullable: true
+        occurredAt:
+          type: string
+          format: date-time
     ClientRequest:
       type: object
       required:
@@ -1166,6 +1235,8 @@ components:
           enum:
           - INSUFFICIENT_STOCK
           - INVALID_STATE_TRANSITION
+          - RENTAL_NOT_READY_FOR_DELIVERY
+          - DELIVERY_DATA_MISMATCH
           - EMAIL_ALREADY_EXISTS
           - EQUIPMENTS_RESOURCE_ALREADY_EXISTS
           - EQUIPMENTS_OPERATION_ABORTED
@@ -1173,6 +1244,8 @@ components:
             Motivo del conflicto:
             - INSUFFICIENT_STOCK: no hay unidades disponibles del equipo (POST /v1/rentals).
             - INVALID_STATE_TRANSITION: el arriendo no está ACTIVE (return y cancel).
+            - RENTAL_NOT_READY_FOR_DELIVERY: el pago o la Saga aún no permiten iniciar la entrega.
+            - DELIVERY_DATA_MISMATCH: el evento de entrega no coincide con el arriendo.
             - EMAIL_ALREADY_EXISTS: el email ya está registrado (POST /v1/clients).
             - EQUIPMENTS_RESOURCE_ALREADY_EXISTS / EQUIPMENTS_OPERATION_ABORTED: conflicto informado por Equipos.
           example: INSUFFICIENT_STOCK

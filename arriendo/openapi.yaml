@@ -740,6 +740,8 @@ components:
           enum:
           - INSUFFICIENT_STOCK
           - INVALID_STATE_TRANSITION
+          - RENTAL_NOT_READY_FOR_DELIVERY
+          - DELIVERY_DATA_MISMATCH
           - EMAIL_ALREADY_EXISTS
           - EQUIPMENTS_RESOURCE_ALREADY_EXISTS
           - EQUIPMENTS_OPERATION_ABORTED
@@ -747,6 +749,8 @@ components:
             Motivo del conflicto:
             - INSUFFICIENT_STOCK: no hay unidades disponibles del equipo (POST /v1/rentals).
             - INVALID_STATE_TRANSITION: el arriendo no está ACTIVE (return y cancel).
+            - RENTAL_NOT_READY_FOR_DELIVERY: el pago o la Saga aún no permiten iniciar la entrega.
+            - DELIVERY_DATA_MISMATCH: el evento de entrega no coincide con el arriendo.
             - EMAIL_ALREADY_EXISTS: el email ya está registrado (POST /v1/clients).
             - EQUIPMENTS_RESOURCE_ALREADY_EXISTS / EQUIPMENTS_OPERATION_ABORTED: conflicto informado por Equipos.
           example: INSUFFICIENT_STOCK
