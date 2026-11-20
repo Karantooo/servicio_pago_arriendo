@@ -45,6 +45,17 @@ services:
       arriendo-test-db:
         condition: service_healthy
 
+  entregas-tests:
+    build:
+      context: ./Entregas/generated_server
+      dockerfile: Dockerfile
+      target: test
+    container_name: entregas-tests
+    environment:
+      DATABASE_URL: sqlite://
+      ADMIN_API_KEY: test-admin-key
+      CLIENT_API_KEY: test-readonly-key
+
   arriendo-test-db:
     image: postgres:16-alpine
     container_name: arriendo-test-db

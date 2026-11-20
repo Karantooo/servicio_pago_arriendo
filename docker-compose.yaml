@@ -47,6 +47,28 @@ services:
       payments-api:
         condition: service_healthy
 
+  entregas-api:
+    build:
+      context: ./Entregas/generated_server
+      dockerfile: Dockerfile
+      target: base
+    container_name: entregas-api
+    restart: always
+    ports:
+      - "${ENTREGAS_API_PORT:-8081}:8081"
+    environment:
+      DATABASE_URL: sqlite:////data/entregas.db
+      ADMIN_API_KEY: ${ADMIN_API_KEY}
+      CLIENT_API_KEY: ${CLIENT_API_KEY}
+      RENTALS_API_URL: http://arriendos-api:8080
+      RENTALS_API_KEY: ${ADMIN_API_KEY}
+      RENTALS_TIMEOUT_SECONDS: ${RENTALS_TIMEOUT_SECONDS:-5}
+    volumes:
+      - entregas_data:/data
+    depends_on:
+      arriendos-api:
+        condition: service_healthy
+
   payments-api:
     build:
       context: ./pagos
@@ -156,3 +178,4 @@ volumes:
   equipos_postgres_data:
   rentals_pg_data:
   payments_pg_data:
+  entregas_data:

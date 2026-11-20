@@ -15,6 +15,7 @@ docker compose -f docker-compose.yaml up --build
 ```
 
 La API REST queda disponible en `http://localhost:8080`. El servicio gRPC y las bases de datos no publican puertos al host: los servicios se comunican por la red interna de Docker Compose.
+La API de Entregas queda disponible en `http://localhost:8081`; su implementación y configuración están descritas en [Entregas/README.md](./Entregas/README.md).
 
 Para detener los contenedores asociados al proyecto:
 
@@ -75,9 +76,9 @@ La API `v2` mantiene las rutas de arriendos bajo `/v2/rentals`. Su contrato est�
 
 Antes de crear un arriendo v2, un administrador debe registrar su tarifa con `PUT /v2/tariffs/{equipmentId}` y un JSON como `{"dailyRate": 10000, "deposit": 20000}`. Arriendos cobra cada periodo iniciado de hasta 24 horas a `dailyRate` y suma una garantía fija `deposit`. El cliente no envía montos en `POST /v2/rentals`; Arriendos los calcula y guarda una copia en el arriendo para mantener el importe ante cambios posteriores de tarifa. Si falta la tarifa, la creación responde `TARIFF_NOT_FOUND` sin reservar la unidad.
 
-`POST /v2/rentals` requiere `Idempotency-Key`; los reintentos de la misma solicitud deben reutilizarla. Tras reservar la unidad, Arriendos inicia Pagos con esa clave. Una respuesta `PENDING` deja el arriendo pendiente y devuelve `rental` junto con `payment` (ID, URL y token de Webpay). Un rechazo confirmado de Pagos libera la unidad; un resultado incierto deja la Saga `IN_DOUBT` para conciliación. La confirmación final del pago y el paso de Entrega aún no están integrados.
+`POST /v2/rentals` requiere `Idempotency-Key`; los reintentos de la misma solicitud deben reutilizarla. Tras reservar la unidad, Arriendos inicia Pagos con esa clave. Una respuesta `PENDING` deja el arriendo pendiente y devuelve `rental` junto con `payment` (ID, URL y token de Webpay). Un rechazo confirmado de Pagos libera la unidad; un resultado incierto deja la Saga `IN_DOUBT` para conciliación. Un pago confirmado deja la Saga en `WAITING_FOR_DELIVERY`; cuando Entregas notifica `DELIVERED`, Arriendos activa el arriendo.
 
-Los estados `IN_DOUBT` y `COMPENSATION_FAILED` requieren revisión: la llamada remota pudo haber tenido éxito aunque la respuesta o la compensación no se hayan confirmado. La interfaz gRPC actual no recibe una clave idempotente para cada operación; por eso, esta implementación registra y expone esas situaciones, pero no reintenta automáticamente operaciones ambiguas.
+Entregas consulta arriendos y Sagas con la API Key de administrador. Al registrar el retiro, llama `PUT /v2/rentals/{rentalId}/delivery-status` para activar el arriendo; una cancelación notifica el mismo endpoint y cancela el arriendo liberando la unidad mediante una Saga. Las notificaciones se deduplican por `deliveryId` y estado. Los estados `IN_DOUBT` y `COMPENSATION_FAILED` requieren revisión: la llamada remota pudo haber tenido éxito aunque la respuesta o la compensación no se hayan confirmado. La interfaz gRPC actual no recibe una clave idempotente para cada operación; por eso, esta implementación registra y expone esas situaciones, pero no reintenta automáticamente operaciones ambiguas.
 
 ## Servicio de Pagos y resiliencia
 
