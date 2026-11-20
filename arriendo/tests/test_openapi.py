@@ -97,6 +97,7 @@ def test_v2_endpoints_document_error_responses():
         ("/v2/rentals", "get"): {"400", "401", "403"},
         ("/v2/rentals/{rentalId}", "get"): {"400", "401", "403", "404"},
         ("/v2/rentals/{rentalId}/saga", "get"): {"400", "401", "403", "404"},
+        ("/v2/rentals/{rentalId}/delivery-status", "put"): {"400", "401", "403", "404", "409", "500", "502", "503", "504"},
         ("/v2/rentals/{rentalId}/cancel", "post"): {"400", "401", "403", "404", "409", "500", "502", "503", "504"},
         ("/v2/rentals/{rentalId}/return", "post"): {"400", "401", "403", "404", "409", "500", "502", "503", "504"},
     }
