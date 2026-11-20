@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import BigInteger, CheckConstraint, Column, Integer, String, DateTime, ForeignKey, Text
+from sqlalchemy import BigInteger, CheckConstraint, Column, Integer, String, DateTime, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -64,5 +64,24 @@ class Saga(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
+class RentalDeliveryNotification(Base):
+    __tablename__ = "rental_delivery_notifications"
+    __table_args__ = (
+        UniqueConstraint("delivery_id", "status", name="uq_delivery_notification"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    rental_id = Column(Integer, ForeignKey("rentals.id"), nullable=False, index=True)
+    delivery_id = Column(Integer, nullable=False)
+    status = Column(String(20), nullable=False)
+    reason = Column(Text, nullable=True)
+    occurred_at = Column(DateTime(timezone=True), nullable=False)
+    received_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )

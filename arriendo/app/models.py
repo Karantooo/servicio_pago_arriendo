@@ -114,6 +114,13 @@ class SagaResponse(BaseModel):
     updatedAt: AwareDatetime
 
 
+class DeliveryStatusNotification(BaseModel):
+    deliveryId: int = Field(..., ge=1)
+    status: Literal["DELIVERED", "CANCELLED"]
+    reason: str | None = None
+    occurredAt: AwareDatetime
+
+
 class BadRequestError(BaseModel):
     code: str = Field(..., examples=['BAD_REQUEST'])
     message: str = Field(
@@ -145,6 +152,8 @@ class NotFoundError(BaseModel):
 class Code(Enum):
     INSUFFICIENT_STOCK = 'INSUFFICIENT_STOCK'
     INVALID_STATE_TRANSITION = 'INVALID_STATE_TRANSITION'
+    RENTAL_NOT_READY_FOR_DELIVERY = 'RENTAL_NOT_READY_FOR_DELIVERY'
+    DELIVERY_DATA_MISMATCH = 'DELIVERY_DATA_MISMATCH'
     EMAIL_ALREADY_EXISTS = 'EMAIL_ALREADY_EXISTS'
     EQUIPMENTS_RESOURCE_ALREADY_EXISTS = 'EQUIPMENTS_RESOURCE_ALREADY_EXISTS'
     EQUIPMENTS_OPERATION_ABORTED = 'EQUIPMENTS_OPERATION_ABORTED'
@@ -153,7 +162,7 @@ class Code(Enum):
 class ConflictError(BaseModel):
     code: Code = Field(
         ...,
-        description='Motivo del conflicto:\n- INSUFFICIENT_STOCK: no hay unidades disponibles del equipo (POST /v1/rentals).\n- INVALID_STATE_TRANSITION: el arriendo no está ACTIVE (return y cancel).\n- EMAIL_ALREADY_EXISTS: el email ya está registrado (POST /v1/clients).\n- EQUIPMENTS_RESOURCE_ALREADY_EXISTS / EQUIPMENTS_OPERATION_ABORTED: conflicto informado por Equipos.',
+        description='Motivo del conflicto:\n- INSUFFICIENT_STOCK: no hay unidades disponibles del equipo (POST /v1/rentals).\n- INVALID_STATE_TRANSITION: el arriendo no está ACTIVE (return y cancel).\n- RENTAL_NOT_READY_FOR_DELIVERY: el pago o la Saga aún no permiten iniciar la entrega.\n- DELIVERY_DATA_MISMATCH: el evento de entrega no coincide con el arriendo.\n- EMAIL_ALREADY_EXISTS: el email ya está registrado (POST /v1/clients).\n- EQUIPMENTS_RESOURCE_ALREADY_EXISTS / EQUIPMENTS_OPERATION_ABORTED: conflicto informado por Equipos.',
         examples=['INSUFFICIENT_STOCK'],
     )
     message: str = Field(
