@@ -35,6 +35,13 @@ def ensure_saga_delivery_column() -> None:
             connection.execute(
                 text("ALTER TABLE sagas ADD COLUMN refund_status VARCHAR(20)")
             )
+        if "equipment_release_status" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE sagas "
+                    "ADD COLUMN equipment_release_status VARCHAR(20)"
+                )
+            )
 
 def get_db():
     db = SessionLocal()

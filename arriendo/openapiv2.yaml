@@ -1172,6 +1172,9 @@ components:
         refundStatus:
           type: string
           nullable: true
+        equipmentReleaseStatus:
+          type: string
+          nullable: true
         error:
           type: string
           nullable: true

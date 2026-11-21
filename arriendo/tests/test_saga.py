@@ -594,6 +594,53 @@ def test_delivery_rejection_unknown_refund_keeps_saga_in_doubt(
     assert released == []
 
 
+def test_reconcile_refund_compensates_release_once(
+    client,
+    db_session,
+    monkeypatch,
+    crear_arriendo,
+):
+    from app import saga_orchestrator
+
+    rental = crear_arriendo(status="PENDING")
+    saga = Saga(
+        id=str(uuid4()),
+        rental_id=rental.id,
+        operation="CREATE",
+        status="IN_DOUBT",
+        current_step="REFUND_PAYMENT_IN_DOUBT",
+        idempotency_key="refund-reconcile-key",
+        payment_id=501,
+        refund_id=802,
+        refund_status="UNKNOWN",
+        equipment_release_status="PENDING",
+    )
+    db_session.add(saga)
+    db_session.commit()
+
+    released = []
+    monkeypatch.setattr(
+        saga_orchestrator.grpc_client,
+        "liberar_unidad",
+        released.append,
+    )
+    monkeypatch.setattr(
+        saga_orchestrator,
+        "consultar_pago",
+        lambda _: _pending_payment(rental.id, "REFUNDED", payment_id=501),
+    )
+
+    first = client.post(f"/v2/rentals/{rental.id}/reconcile-payment")
+    second = client.post(f"/v2/rentals/{rental.id}/reconcile-payment")
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["status"] == "COMPENSATED"
+    assert first.json()["equipmentReleaseStatus"] == "COMPLETED"
+    assert released == [50]
+    db_session.refresh(rental)
+    assert rental.status == "FAILED"
+
+
 def test_reconcile_failed_payment_releases_once(client, db_session, monkeypatch):
     from app import saga_orchestrator
 

@@ -44,7 +44,15 @@ class PaymentState:
     payment_id: int
     rental_id: int
     amount_total: int
-    status: Literal["PENDING", "CHARGED", "FAILED", "CANCELLED", "UNKNOWN"]
+    status: Literal[
+        "PENDING",
+        "CHARGED",
+        "FAILED",
+        "CANCELLED",
+        "UNKNOWN",
+        "REFUND_PENDING",
+        "REFUNDED",
+    ]
     redirect_url: str | None
     token: str | None
 
@@ -148,7 +156,15 @@ def consultar_pago(payment_id: int) -> PaymentState:
             or state.payment_id <= 0
             or state.rental_id <= 0
             or state.amount_total < 0
-            or state.status not in {"PENDING", "CHARGED", "FAILED", "CANCELLED", "UNKNOWN"}
+            or state.status not in {
+                "PENDING",
+                "CHARGED",
+                "FAILED",
+                "CANCELLED",
+                "UNKNOWN",
+                "REFUND_PENDING",
+                "REFUNDED",
+            }
         ):
             raise ValueError("Respuesta de pago inválida")
     except (ValueError, KeyError, TypeError) as error:

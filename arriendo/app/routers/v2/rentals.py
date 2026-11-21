@@ -443,6 +443,7 @@ def _build_saga_response(saga: Saga) -> SagaResponse:
         deliveryId=saga.delivery_id,
         refundId=saga.refund_id,
         refundStatus=saga.refund_status,
+        equipmentReleaseStatus=saga.equipment_release_status,
         error=saga.error,
         createdAt=_utc(saga.created_at),
         updatedAt=_utc(saga.updated_at),

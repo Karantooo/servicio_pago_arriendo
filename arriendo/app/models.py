@@ -112,6 +112,7 @@ class SagaResponse(BaseModel):
     deliveryId: int | None = None
     refundId: int | None = None
     refundStatus: str | None = None
+    equipmentReleaseStatus: str | None = None
     error: str | None = None
     createdAt: AwareDatetime
     updatedAt: AwareDatetime

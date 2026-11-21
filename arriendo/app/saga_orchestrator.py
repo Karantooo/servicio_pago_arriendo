@@ -305,6 +305,7 @@ def _compensate_delivery_failure(
     saga.status = "COMPENSATING"
     saga.current_step = "REFUND_PAYMENT"
     saga.error = str(error)
+    saga.equipment_release_status = "PENDING"
     db.commit()
 
     if saga.payment_id is None:
@@ -345,6 +346,7 @@ def _compensate_delivery_failure(
     except HTTPException as release_error:
         saga.status = "COMPENSATION_FAILED"
         saga.current_step = "RELEASE_EQUIPMENT"
+        saga.equipment_release_status = "IN_DOUBT"
         saga.error = (
             f"{error}; reembolso confirmado, pero la liberación falló: "
             f"{_http_error_message(release_error)}"
@@ -354,6 +356,7 @@ def _compensate_delivery_failure(
 
     rental = db.get(Rental, rental_id)
     rental.status = "FAILED"
+    saga.equipment_release_status = "COMPLETED"
     saga.status = "COMPENSATED"
     saga.current_step = "COMPENSATION_COMPLETED"
     saga.error = str(error)
@@ -432,18 +435,42 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
             "REFUND_PAYMENT_IN_DOUBT",
         }
     ):
-        if saga.refund_status == "REFUNDED":
+        payment_is_refunded = saga.refund_status == "REFUNDED"
+        if saga.payment_id is not None and not payment_is_refunded:
             try:
-                grpc_client.liberar_unidad(rental.equipment_id)
-            except HTTPException as release_error:
-                saga.status = "COMPENSATION_FAILED"
-                saga.current_step = "RELEASE_EQUIPMENT"
-                saga.error = (
-                    "El reembolso ya fue confirmado, pero la liberación falló: "
-                    f"{_http_error_message(release_error)}"
-                )
+                payment = consultar_pago(saga.payment_id)
+            except PaymentLookupUncertain as error:
+                saga.status = "IN_DOUBT"
+                saga.error = f"No se pudo consultar el reembolso: {error}"
                 db.commit()
-                return saga
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        "code": "PAYMENT_UNCERTAIN",
+                        "message": "No se pudo consultar el estado del reembolso.",
+                    },
+                ) from error
+            if payment.status == "REFUNDED":
+                payment_is_refunded = True
+                saga.refund_status = "REFUNDED"
+                db.commit()
+
+        if payment_is_refunded:
+            if saga.equipment_release_status != "COMPLETED":
+                try:
+                    grpc_client.liberar_unidad(rental.equipment_id)
+                except HTTPException as release_error:
+                    saga.status = "COMPENSATION_FAILED"
+                    saga.current_step = "RELEASE_EQUIPMENT"
+                    saga.equipment_release_status = "IN_DOUBT"
+                    saga.error = (
+                        "El reembolso ya fue confirmado, pero la liberación falló: "
+                        f"{_http_error_message(release_error)}"
+                    )
+                    db.commit()
+                    return saga
+                saga.equipment_release_status = "COMPLETED"
+                db.commit()
             rental.status = "FAILED"
             saga.status = "COMPENSATED"
             saga.current_step = "COMPENSATION_COMPLETED"
