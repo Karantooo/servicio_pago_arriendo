@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.auth import admin_validation, client_validation
-from app.bd_models import Client, Rental, Saga
+from app.bd_models import Client, Rental, Saga, SagaStepEvent
 from app.bd_models import RentalDeliveryNotification
 from app.database import get_db
 from app.models import (
@@ -26,6 +26,7 @@ from app.models import (
     RentalCreationResponse,
     RentalResponse,
     SagaResponse,
+    SagaStepEventResponse,
     ServiceUnavailableError,
 )
 from app.redis import RentalCache, get_rental_cache
@@ -232,6 +233,59 @@ def get_latest_saga(
     return _build_saga_response(saga)
 
 
+@router.get(
+    "/{rentalId}/saga/events",
+    response_model=List[SagaStepEventResponse],
+)
+def get_saga_events(
+    rentalId: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    client_auth: dict = Depends(client_validation),
+) -> List[SagaStepEventResponse]:
+    rental = db.get(Rental, rentalId)
+    if rental is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "RENTAL_NOT_FOUND",
+                "message": f"Arriendo {rentalId} no encontrado.",
+            },
+        )
+
+    saga = (
+        db.query(Saga)
+        .filter(Saga.rental_id == rentalId)
+        .order_by(Saga.created_at.desc(), Saga.id.desc())
+        .first()
+    )
+    if saga is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "SAGA_NOT_FOUND",
+                "message": f"No hay una Saga registrada para el arriendo {rentalId}.",
+            },
+        )
+
+    events = (
+        db.query(SagaStepEvent)
+        .filter(SagaStepEvent.saga_id == saga.id)
+        .order_by(SagaStepEvent.occurred_at.asc(), SagaStepEvent.id.asc())
+        .all()
+    )
+    return [
+        SagaStepEventResponse(
+            id=event.id,
+            sagaId=event.saga_id,
+            step=event.step,
+            status=event.status,
+            detail=event.detail,
+            occurredAt=_utc(event.occurred_at),
+        )
+        for event in events
+    ]
+
+
 @router.put(
     "/{rentalId}/delivery-status",
     response_model=RentalResponse,
@@ -329,6 +383,17 @@ def notify_delivery_status(
                 saga.status = "COMPLETED"
                 saga.current_step = "DONE"
                 saga.error = None
+                db.add(
+                    SagaStepEvent(
+                        saga_id=saga.id,
+                        step="DELIVERY_COMPLETED",
+                        status="COMPLETED",
+                        detail=(
+                            f"Entrega {notification.deliveryId} registrada "
+                            "como entregada."
+                        ),
+                    )
+                )
             elif rental.status != "ACTIVE":
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,

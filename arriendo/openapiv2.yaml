@@ -719,6 +719,34 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/NotFoundError'
+  /v2/rentals/{rentalId}/saga/events:
+    get:
+      tags:
+      - Rentals
+      summary: Consultar trazabilidad de pasos de la Saga
+      operationId: getSagaEventsV2
+      parameters:
+      - name: rentalId
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      responses:
+        '200':
+          description: Eventos históricos de la Saga
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SagaStepEventResponse'
+        '404':
+          description: Arriendo o Saga no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
   /v2/rentals/{rentalId}/delivery-status:
     put:
       tags:
@@ -1182,6 +1210,31 @@ components:
           type: string
           format: date-time
         updatedAt:
+          type: string
+          format: date-time
+
+    SagaStepEventResponse:
+      type: object
+      required:
+      - id
+      - sagaId
+      - step
+      - status
+      - occurredAt
+      properties:
+        id:
+          type: integer
+        sagaId:
+          type: string
+          format: uuid
+        step:
+          type: string
+        status:
+          type: string
+        detail:
+          type: string
+          nullable: true
+        occurredAt:
           type: string
           format: date-time
 

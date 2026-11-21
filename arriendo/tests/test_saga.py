@@ -3,7 +3,7 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from uuid import uuid4
 
-from app.bd_models import Rental, Saga
+from app.bd_models import Rental, Saga, SagaStepEvent
 from app.models import PaymentCheckout
 from app.payments_client import PaymentLookupUncertain, PaymentStartRejected, PaymentStartUncertain, PaymentState
 
@@ -104,6 +104,15 @@ def test_v2_create_rental_waits_for_payment(client, db_session, monkeypatch):
     saga_response = client.get(f"/v2/rentals/{rental.id}/saga")
     assert saga_response.status_code == 200
     assert saga_response.json()["id"] == saga.id
+
+    events_response = client.get(f"/v2/rentals/{rental.id}/saga/events")
+    assert events_response.status_code == 200
+    events = events_response.json()
+    assert {event["step"] for event in events} >= {
+        "RESERVE_EQUIPMENT",
+        "START_PAYMENT",
+    }
+    assert db_session.query(SagaStepEvent).count() >= 3
 
 
 def test_v2_retry_returns_existing_checkout_without_second_charge(

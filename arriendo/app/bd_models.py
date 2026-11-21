@@ -72,6 +72,26 @@ class Saga(Base):
     )
 
 
+class SagaStepEvent(Base):
+    __tablename__ = "saga_step_events"
+
+    id = Column(Integer, primary_key=True)
+    saga_id = Column(
+        String(36),
+        ForeignKey("sagas.id"),
+        nullable=False,
+        index=True,
+    )
+    step = Column(String(60), nullable=False, index=True)
+    status = Column(String(30), nullable=False)
+    detail = Column(Text, nullable=True)
+    occurred_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
 class RentalDeliveryNotification(Base):
     __tablename__ = "rental_delivery_notifications"
     __table_args__ = (

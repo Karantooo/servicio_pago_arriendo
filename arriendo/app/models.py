@@ -118,6 +118,15 @@ class SagaResponse(BaseModel):
     updatedAt: AwareDatetime
 
 
+class SagaStepEventResponse(BaseModel):
+    id: int
+    sagaId: str
+    step: str
+    status: str
+    detail: str | None = None
+    occurredAt: AwareDatetime
+
+
 class DeliveryStatusNotification(BaseModel):
     deliveryId: int = Field(..., ge=1)
     status: Literal["DELIVERED", "CANCELLED"]

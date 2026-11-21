@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import grpc_client
-from app.bd_models import Rental, Saga
+from app.bd_models import Rental, Saga, SagaStepEvent
 from app.models import PaymentCheckout
 from app.payments_client import (
     PaymentLookupUncertain,
@@ -27,6 +27,24 @@ from app.delivery_client import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _record_saga_event(
+    db: Session,
+    saga_id: str,
+    step: str,
+    status: str,
+    detail: str | None = None,
+) -> None:
+    db.add(
+        SagaStepEvent(
+            saga_id=saga_id,
+            step=step,
+            status=status,
+            detail=detail,
+        )
+    )
+    db.commit()
 
 
 def find_creation_by_key(
@@ -117,6 +135,13 @@ def create_rental(
         if existing is None:
             raise
         return existing
+    _record_saga_event(
+        db,
+        saga.id,
+        "RESERVE_EQUIPMENT",
+        "STARTED",
+        "Inicio de la reserva del equipo.",
+    )
     db.refresh(rental)
 
     try:
@@ -124,6 +149,14 @@ def create_rental(
     except HTTPException as error:
         _record_remote_failure(db, saga.id, rental.id, error)
         raise
+
+    _record_saga_event(
+        db,
+        saga.id,
+        "RESERVE_EQUIPMENT",
+        "COMPLETED",
+        f"Equipo {equipment_id} reservado.",
+    )
 
     try:
         saga.status = "IN_PROGRESS"
@@ -187,6 +220,14 @@ def create_rental(
             detail={"code": "PAYMENT_UNCERTAIN", "message": str(error)},
         ) from error
 
+    _record_saga_event(
+        db,
+        saga.id,
+        "START_PAYMENT",
+        "COMPLETED",
+        f"Cobro {checkout.paymentId} iniciado con estado {checkout.status}.",
+    )
+
     try:
         saga.payment_id = checkout.paymentId
         saga.checkout_status = checkout.status
@@ -226,6 +267,13 @@ def create_rental(
                 equipment_id,
                 error,
             )
+            _record_saga_event(
+                db,
+                saga.id,
+                "DELIVERY_SCHEDULING",
+                "FAILED",
+                str(error),
+            )
             compensated = db.get(Saga, saga.id)
             detail_message = (
                 "El pago fue reembolsado y la unidad liberada."
@@ -252,6 +300,13 @@ def create_rental(
         saga.current_step = "DELIVERY_SCHEDULED"
         saga.error = None
         db.commit()
+        _record_saga_event(
+            db,
+            saga.id,
+            "DELIVERY_SCHEDULING",
+            "COMPLETED",
+            f"Entrega {delivery.delivery_id} agendada.",
+        )
 
     db.refresh(rental)
     return rental, checkout
@@ -333,6 +388,13 @@ def _compensate_delivery_failure(
     saga = db.get(Saga, saga.id)
     saga.refund_id = refund.refund_id
     saga.refund_status = refund.status
+    _record_saga_event(
+        db,
+        saga.id,
+        "REFUND_PAYMENT",
+        "COMPLETED" if refund.status == "REFUNDED" else "IN_DOUBT",
+        f"Reembolso {refund.refund_id} con estado {refund.status}.",
+    )
 
     if refund.status in {"REFUND_PENDING", "UNKNOWN"}:
         saga.status = "IN_DOUBT"
@@ -352,6 +414,13 @@ def _compensate_delivery_failure(
             f"{_http_error_message(release_error)}"
         )
         db.commit()
+        _record_saga_event(
+            db,
+            saga.id,
+            "RELEASE_EQUIPMENT",
+            "IN_DOUBT",
+            str(release_error),
+        )
         return
 
     rental = db.get(Rental, rental_id)
@@ -361,6 +430,13 @@ def _compensate_delivery_failure(
     saga.current_step = "COMPENSATION_COMPLETED"
     saga.error = str(error)
     db.commit()
+    _record_saga_event(
+        db,
+        saga.id,
+        "RELEASE_EQUIPMENT",
+        "COMPLETED",
+        f"Equipo {equipment_id} liberado.",
+    )
 
 
 def _record_delivery_uncertainty(
