@@ -397,8 +397,9 @@ def _pending_payment(rental_id, status="PENDING", payment_id=501):
     )
 
 
-def test_reconcile_confirmed_payment_waits_for_delivery(client, db_session, monkeypatch):
+def test_reconcile_confirmed_payment_schedules_delivery(client, db_session, monkeypatch):
     from app import saga_orchestrator
+    from app.delivery_client import ScheduledDelivery
 
     client_id = _create_client(client)
     _create_tariff(client)
@@ -411,14 +412,108 @@ def test_reconcile_confirmed_payment_waits_for_delivery(client, db_session, monk
     rental_id = created.json()["rental"]["id"]
     calls = []
     monkeypatch.setattr(saga_orchestrator, "consultar_pago", lambda payment_id: calls.append(payment_id) or _pending_payment(rental_id, "CHARGED"))
+    delivery_calls = []
+    monkeypatch.setattr(
+        saga_orchestrator,
+        "agendar_entrega",
+        lambda **kwargs: delivery_calls.append(kwargs)
+        or ScheduledDelivery(delivery_id=701, status="SCHEDULED"),
+    )
 
     first = client.post(f"/v2/rentals/{rental_id}/reconcile-payment")
     second = client.post(f"/v2/rentals/{rental_id}/reconcile-payment")
 
     assert first.status_code == second.status_code == 200
-    assert first.json()["currentStep"] == "WAITING_FOR_DELIVERY"
+    assert first.json()["currentStep"] == "DELIVERY_SCHEDULED"
+    assert first.json()["deliveryId"] == 701
     assert calls == [501]
+    assert len(delivery_calls) == 1
+    assert delivery_calls[0]["payment_id"] == 501
+    assert delivery_calls[0]["idempotency_key"] == IDEMPOTENCY_HEADERS["Idempotency-Key"]
     assert db_session.get(Rental, rental_id).status == "PENDING"
+
+
+def test_confirmed_charge_schedules_delivery(client, db_session, monkeypatch):
+    from app import saga_orchestrator
+    from app.delivery_client import ScheduledDelivery
+
+    client_id = _create_client(client)
+    _create_tariff(client)
+    monkeypatch.setattr(
+        saga_orchestrator.grpc_client,
+        "reservar_unidad",
+        lambda _: None,
+    )
+    monkeypatch.setattr(
+        saga_orchestrator,
+        "iniciar_cobro",
+        lambda **_: PaymentCheckout(
+            paymentId=501,
+            status="CHARGED",
+            redirectUrl=None,
+            token=None,
+        ),
+    )
+    monkeypatch.setattr(
+        saga_orchestrator,
+        "agendar_entrega",
+        lambda **_: ScheduledDelivery(delivery_id=702, status="SCHEDULED"),
+    )
+
+    response = client.post(
+        "/v2/rentals",
+        json={**PAYLOAD, "clientId": client_id},
+        headers=IDEMPOTENCY_HEADERS,
+    )
+
+    assert response.status_code == 201
+    saga = db_session.query(Saga).one()
+    assert saga.status == "IN_PROGRESS"
+    assert saga.current_step == "DELIVERY_SCHEDULED"
+    assert saga.delivery_id == 702
+
+
+def test_confirmed_charge_delivery_rejection_is_persisted(
+    client,
+    db_session,
+    monkeypatch,
+):
+    from app import saga_orchestrator
+    from app.delivery_client import DeliverySchedulingRejected
+
+    client_id = _create_client(client)
+    _create_tariff(client)
+    monkeypatch.setattr(
+        saga_orchestrator.grpc_client,
+        "reservar_unidad",
+        lambda _: None,
+    )
+    monkeypatch.setattr(
+        saga_orchestrator,
+        "iniciar_cobro",
+        lambda **_: PaymentCheckout(
+            paymentId=501,
+            status="CHARGED",
+        ),
+    )
+
+    def reject_delivery(**_):
+        raise DeliverySchedulingRejected("No se pudo agendar la entrega.")
+
+    monkeypatch.setattr(saga_orchestrator, "agendar_entrega", reject_delivery)
+
+    response = client.post(
+        "/v2/rentals",
+        json={**PAYLOAD, "clientId": client_id},
+        headers=IDEMPOTENCY_HEADERS,
+    )
+
+    assert response.status_code == 409
+    rental = db_session.query(Rental).one()
+    saga = db_session.query(Saga).one()
+    assert rental.status == "FAILED"
+    assert saga.status == "FAILED"
+    assert saga.current_step == "DELIVERY_SCHEDULING_FAILED"
 
 
 def test_reconcile_failed_payment_releases_once(client, db_session, monkeypatch):

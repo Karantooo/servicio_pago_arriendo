@@ -316,7 +316,7 @@ def notify_delivery_status(
                     saga is None
                     or saga.status not in {"IN_PROGRESS", "COMPLETED"}
                     or saga.current_step
-                    not in {"PAYMENT_CONFIRMED", "WAITING_FOR_DELIVERY"}
+                    not in {"PAYMENT_CONFIRMED", "WAITING_FOR_DELIVERY", "DELIVERY_SCHEDULED"}
                 ):
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
@@ -440,6 +440,7 @@ def _build_saga_response(saga: Saga) -> SagaResponse:
         operation=saga.operation,
         status=saga.status,
         currentStep=saga.current_step,
+        deliveryId=saga.delivery_id,
         error=saga.error,
         createdAt=_utc(saga.created_at),
         updatedAt=_utc(saga.updated_at),

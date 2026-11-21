@@ -51,6 +51,7 @@ class Saga(Base):
     idempotency_key = Column(String(128), unique=True, nullable=True)
     request_fingerprint = Column(String(64), nullable=True)
     payment_id = Column(BigInteger, nullable=True)
+    delivery_id = Column(BigInteger, nullable=True)
     checkout_status = Column(String(20), nullable=True)
     checkout_redirect_url = Column(Text, nullable=True)
     checkout_token = Column(Text, nullable=True)

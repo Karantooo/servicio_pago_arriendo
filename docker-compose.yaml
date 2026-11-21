@@ -38,6 +38,8 @@ services:
       CLIENT_API_KEY: ${CLIENT_API_KEY}
       PAYMENTS_API_URL: ${PAYMENTS_API_URL:-http://payments-api:8003}
       PAYMENTS_TIMEOUT_SECONDS: ${PAYMENTS_TIMEOUT_SECONDS:-3}
+      DELIVERIES_API_URL: ${DELIVERIES_API_URL:-http://entregas-api:8081}
+      DELIVERIES_TIMEOUT_SECONDS: ${DELIVERIES_TIMEOUT_SECONDS:-5}
 
     depends_on:
       arriendo-db:

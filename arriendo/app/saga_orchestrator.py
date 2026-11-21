@@ -17,6 +17,11 @@ from app.payments_client import (
     consultar_pago,
     iniciar_cobro,
 )
+from app.delivery_client import (
+    DeliverySchedulingRejected,
+    DeliverySchedulingUncertain,
+    agendar_entrega,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -184,11 +189,7 @@ def create_rental(
         saga.checkout_status = checkout.status
         saga.checkout_redirect_url = checkout.redirectUrl
         saga.checkout_token = checkout.token
-        saga.current_step = (
-            "WAITING_FOR_DELIVERY"
-            if checkout.status == "CHARGED"
-            else "WAITING_PAYMENT"
-        )
+        saga.current_step = "PAYMENT_CONFIRMED" if checkout.status == "CHARGED" else "WAITING_PAYMENT"
         if checkout.status not in {"PENDING", "CHARGED"}:
             saga.status = "IN_DOUBT"
         db.commit()
@@ -202,6 +203,38 @@ def create_rental(
                 "message": "El pago pudo iniciarse; la Saga requiere conciliación.",
             },
         ) from persistence_error
+
+    if checkout.status == "CHARGED":
+        try:
+            delivery = agendar_entrega(
+                rental_id=rental.id,
+                client_id=client_id,
+                equipment_id=equipment_id,
+                start_date=rental.start_date,
+                end_date=rental.end_date,
+                payment_id=checkout.paymentId,
+                idempotency_key=saga.idempotency_key,
+            )
+        except DeliverySchedulingRejected as error:
+            _record_delivery_failure(db, saga.id, rental.id, error)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "DELIVERY_SCHEDULING_REJECTED", "message": str(error)},
+            ) from error
+        except DeliverySchedulingUncertain as error:
+            _record_delivery_uncertainty(db, saga.id, error)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"code": "DELIVERY_SCHEDULING_UNCERTAIN", "message": str(error)},
+            ) from error
+
+        saga = db.get(Saga, saga.id)
+        saga.delivery_id = delivery.delivery_id
+        saga.status = "IN_PROGRESS"
+        saga.current_step = "DELIVERY_SCHEDULED"
+        saga.error = None
+        db.commit()
+
     db.refresh(rental)
     return rental, checkout
 
@@ -213,6 +246,43 @@ def _record_payment_uncertainty(db: Session, saga_id: str, error: Exception) -> 
         raise RuntimeError("No se encontró la Saga al registrar el pago incierto.")
     saga.status = "IN_DOUBT"
     saga.current_step = "START_PAYMENT"
+    saga.error = str(error)
+    db.commit()
+
+
+def _record_delivery_failure(
+    db: Session,
+    saga_id: str,
+    rental_id: int,
+    error: Exception,
+) -> None:
+    db.rollback()
+    saga = db.get(Saga, saga_id)
+    rental = db.get(Rental, rental_id)
+    if saga is None or rental is None:
+        raise RuntimeError(
+            "No se encontró la Saga o el arriendo al registrar el fallo de Entregas."
+        )
+    saga.status = "FAILED"
+    saga.current_step = "DELIVERY_SCHEDULING_FAILED"
+    saga.error = str(error)
+    rental.status = "FAILED"
+    db.commit()
+
+
+def _record_delivery_uncertainty(
+    db: Session,
+    saga_id: str,
+    error: Exception,
+) -> None:
+    db.rollback()
+    saga = db.get(Saga, saga_id)
+    if saga is None:
+        raise RuntimeError(
+            "No se encontró la Saga al registrar la duda de Entregas."
+        )
+    saga.status = "IN_DOUBT"
+    saga.current_step = "DELIVERY_SCHEDULING_IN_DOUBT"
     saga.error = str(error)
     db.commit()
 
@@ -262,6 +332,7 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
     if saga.status in {"COMPENSATED", "COMPLETED"} or saga.current_step in {
         "PAYMENT_CONFIRMED",
         "WAITING_FOR_DELIVERY",
+        "DELIVERY_SCHEDULED",
     }:
         return saga
     if saga.status in {"COMPENSATING", "COMPENSATION_FAILED", "FAILED"}:
@@ -269,6 +340,44 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "SAGA_REQUIRES_REVIEW", "message": "La Saga está compensando o requiere revisión."},
         )
+    if saga.current_step == "DELIVERY_SCHEDULING_IN_DOUBT":
+        if saga.delivery_id is not None:
+            saga.status = "IN_PROGRESS"
+            saga.current_step = "DELIVERY_SCHEDULED"
+            saga.error = None
+            db.commit()
+            return saga
+        if saga.payment_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "PAYMENT_NOT_STARTED", "message": "El pago todavía no tiene un ID confirmado."},
+            )
+        try:
+            delivery = agendar_entrega(
+                rental_id=rental.id,
+                client_id=rental.client_id,
+                equipment_id=rental.equipment_id,
+                start_date=rental.start_date,
+                end_date=rental.end_date,
+                payment_id=saga.payment_id,
+                idempotency_key=saga.idempotency_key,
+            )
+        except DeliverySchedulingRejected as error:
+            _record_delivery_failure(db, saga.id, rental.id, error)
+            return db.get(Saga, saga.id)
+        except DeliverySchedulingUncertain as error:
+            _record_delivery_uncertainty(db, saga.id, error)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"code": "DELIVERY_SCHEDULING_UNCERTAIN", "message": str(error)},
+            ) from error
+        saga = db.get(Saga, saga.id)
+        saga.delivery_id = delivery.delivery_id
+        saga.status = "IN_PROGRESS"
+        saga.current_step = "DELIVERY_SCHEDULED"
+        saga.error = None
+        db.commit()
+        return saga
     if saga.current_step not in {"START_PAYMENT", "WAITING_PAYMENT"}:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -358,10 +467,41 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
                 Saga.current_step.in_(["START_PAYMENT", "WAITING_PAYMENT"]),
             )
             .values(
-                status="IN_PROGRESS", current_step="WAITING_FOR_DELIVERY",
+                status="IN_PROGRESS", current_step="PAYMENT_CONFIRMED",
                 checkout_status="CHARGED", error=None,
             )
         )
+        db.commit()
+        db.expire_all()
+        saga = db.get(Saga, saga.id)
+
+        if saga.delivery_id is None:
+            try:
+                delivery = agendar_entrega(
+                    rental_id=rental.id,
+                    client_id=rental.client_id,
+                    equipment_id=rental.equipment_id,
+                    start_date=rental.start_date,
+                    end_date=rental.end_date,
+                    payment_id=saga.payment_id,
+                    idempotency_key=saga.idempotency_key,
+                )
+            except DeliverySchedulingRejected as error:
+                _record_delivery_failure(db, saga.id, rental.id, error)
+                return db.get(Saga, saga.id)
+            except DeliverySchedulingUncertain as error:
+                _record_delivery_uncertainty(db, saga.id, error)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={"code": "DELIVERY_SCHEDULING_UNCERTAIN", "message": str(error)},
+                ) from error
+
+            saga = db.get(Saga, saga.id)
+            saga.delivery_id = delivery.delivery_id
+            saga.status = "IN_PROGRESS"
+            saga.current_step = "DELIVERY_SCHEDULED"
+            saga.error = None
+            db.commit()
     else:
         has_checkout = bool(payment.redirect_url and payment.token)
         db.execute(
