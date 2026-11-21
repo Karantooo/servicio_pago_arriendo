@@ -480,6 +480,7 @@ def test_confirmed_charge_delivery_rejection_is_persisted(
 ):
     from app import saga_orchestrator
     from app.delivery_client import DeliverySchedulingRejected
+    from app.payments_client import RefundState
 
     client_id = _create_client(client)
     _create_tariff(client)
@@ -501,6 +502,19 @@ def test_confirmed_charge_delivery_rejection_is_persisted(
         raise DeliverySchedulingRejected("No se pudo agendar la entrega.")
 
     monkeypatch.setattr(saga_orchestrator, "agendar_entrega", reject_delivery)
+    refunds = []
+
+    def refund_payment(**kwargs):
+        refunds.append(kwargs)
+        return RefundState(refund_id=801, status="REFUNDED")
+
+    monkeypatch.setattr(saga_orchestrator, "reembolsar_pago", refund_payment)
+    released = []
+    monkeypatch.setattr(
+        saga_orchestrator.grpc_client,
+        "liberar_unidad",
+        released.append,
+    )
 
     response = client.post(
         "/v2/rentals",
@@ -512,8 +526,72 @@ def test_confirmed_charge_delivery_rejection_is_persisted(
     rental = db_session.query(Rental).one()
     saga = db_session.query(Saga).one()
     assert rental.status == "FAILED"
-    assert saga.status == "FAILED"
-    assert saga.current_step == "DELIVERY_SCHEDULING_FAILED"
+    assert saga.status == "COMPENSATED"
+    assert saga.current_step == "COMPENSATION_COMPLETED"
+    assert saga.refund_id == 801
+    assert saga.refund_status == "REFUNDED"
+    assert released == [50]
+    assert len(refunds) == 1
+    assert refunds[0]["payment_id"] == 501
+    assert refunds[0]["rental_id"] == rental.id
+    assert refunds[0]["idempotency_key"].endswith("-refund")
+
+
+def test_delivery_rejection_unknown_refund_keeps_saga_in_doubt(
+    client,
+    db_session,
+    monkeypatch,
+):
+    from app import saga_orchestrator
+    from app.delivery_client import DeliverySchedulingRejected
+    from app.payments_client import RefundState
+
+    client_id = _create_client(client)
+    _create_tariff(client)
+    monkeypatch.setattr(
+        saga_orchestrator.grpc_client,
+        "reservar_unidad",
+        lambda _: None,
+    )
+    monkeypatch.setattr(
+        saga_orchestrator,
+        "iniciar_cobro",
+        lambda **_: PaymentCheckout(paymentId=501, status="CHARGED"),
+    )
+    monkeypatch.setattr(
+        saga_orchestrator,
+        "agendar_entrega",
+        lambda **_: (_ for _ in ()).throw(
+            DeliverySchedulingRejected("Entregas rechazo el agendamiento.")
+        ),
+    )
+    monkeypatch.setattr(
+        saga_orchestrator,
+        "reembolsar_pago",
+        lambda **_: RefundState(refund_id=802, status="UNKNOWN"),
+    )
+    released = []
+    monkeypatch.setattr(
+        saga_orchestrator.grpc_client,
+        "liberar_unidad",
+        released.append,
+    )
+
+    response = client.post(
+        "/v2/rentals",
+        json={**PAYLOAD, "clientId": client_id},
+        headers=IDEMPOTENCY_HEADERS,
+    )
+
+    assert response.status_code == 409
+    rental = db_session.query(Rental).one()
+    saga = db_session.query(Saga).one()
+    assert rental.status == "PENDING"
+    assert saga.status == "IN_DOUBT"
+    assert saga.current_step == "REFUND_PAYMENT_IN_DOUBT"
+    assert saga.refund_id == 802
+    assert saga.refund_status == "UNKNOWN"
+    assert released == []
 
 
 def test_reconcile_failed_payment_releases_once(client, db_session, monkeypatch):

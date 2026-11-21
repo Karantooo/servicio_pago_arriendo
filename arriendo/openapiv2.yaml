@@ -1166,6 +1166,12 @@ components:
         deliveryId:
           type: integer
           nullable: true
+        refundId:
+          type: integer
+          nullable: true
+        refundStatus:
+          type: string
+          nullable: true
         error:
           type: string
           nullable: true

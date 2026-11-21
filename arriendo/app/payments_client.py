@@ -31,6 +31,14 @@ class PaymentLookupUncertain(Exception):
     """No se pudo confirmar el estado actual de un pago."""
 
 
+class RefundRejected(Exception):
+    """Pagos rechazo la solicitud de reembolso."""
+
+
+class RefundUncertain(Exception):
+    """No se pudo confirmar si el reembolso se realizo."""
+
+
 @dataclass(frozen=True)
 class PaymentState:
     payment_id: int
@@ -39,6 +47,76 @@ class PaymentState:
     status: Literal["PENDING", "CHARGED", "FAILED", "CANCELLED", "UNKNOWN"]
     redirect_url: str | None
     token: str | None
+
+
+@dataclass(frozen=True)
+class RefundState:
+    refund_id: int
+    status: Literal["REFUND_PENDING", "REFUNDED", "UNKNOWN"]
+
+
+def reembolsar_pago(
+    payment_id: int,
+    rental_id: int,
+    idempotency_key: str,
+) -> RefundState:
+    try:
+        response = httpx.post(
+            f"{PAYMENTS_API_URL}/payments/{payment_id}/refund",
+            headers={"Idempotency-Key": idempotency_key},
+            json={
+                "reason": "SAGA_COMPENSATION",
+                "rental_id": rental_id,
+            },
+            timeout=PAYMENTS_TIMEOUT_SECONDS,
+        )
+    except httpx.RequestError as error:
+        raise RefundUncertain(
+            "No se recibió una respuesta al solicitar el reembolso."
+        ) from error
+
+    if response.status_code in {400, 404, 409}:
+        raise RefundRejected(
+            _refund_error_message(response, "Pagos rechazo el reembolso.")
+        )
+
+    if response.status_code not in {200, 201}:
+        raise RefundUncertain(
+            f"Pagos respondió HTTP {response.status_code} al solicitar el reembolso."
+        )
+
+    try:
+        data = response.json()
+        refund = RefundState(
+            refund_id=int(data["refund_id"]),
+            status=data["status"],
+        )
+        if refund.refund_id <= 0 or refund.status not in {
+            "REFUND_PENDING",
+            "REFUNDED",
+            "UNKNOWN",
+        }:
+            raise ValueError("Respuesta de reembolso inválida")
+    except (ValueError, KeyError, TypeError) as error:
+        raise RefundUncertain(
+            "Pagos respondió, pero no se pudo interpretar el reembolso."
+        ) from error
+    return refund
+
+
+def _refund_error_message(response: httpx.Response, fallback: str) -> str:
+    try:
+        data = response.json()
+        if isinstance(data, dict):
+            if data.get("message"):
+                return str(data["message"])
+            if data.get("detail"):
+                detail = data["detail"]
+                if isinstance(detail, dict) and detail.get("message"):
+                    return str(detail["message"])
+    except ValueError:
+        pass
+    return fallback
 
 
 def consultar_pago(payment_id: int) -> PaymentState:

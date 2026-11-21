@@ -14,8 +14,11 @@ from app.payments_client import (
     PaymentLookupUncertain,
     PaymentStartRejected,
     PaymentStartUncertain,
+    RefundRejected,
+    RefundUncertain,
     consultar_pago,
     iniciar_cobro,
+    reembolsar_pago,
 )
 from app.delivery_client import (
     DeliverySchedulingRejected,
@@ -216,10 +219,25 @@ def create_rental(
                 idempotency_key=saga.idempotency_key,
             )
         except DeliverySchedulingRejected as error:
-            _record_delivery_failure(db, saga.id, rental.id, error)
+            _compensate_delivery_failure(
+                db,
+                saga.id,
+                rental.id,
+                equipment_id,
+                error,
+            )
+            compensated = db.get(Saga, saga.id)
+            detail_message = (
+                "El pago fue reembolsado y la unidad liberada."
+                if compensated.status == "COMPENSATED"
+                else "La compensación no pudo confirmarse y requiere conciliación."
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail={"code": "DELIVERY_SCHEDULING_REJECTED", "message": str(error)},
+                detail={
+                    "code": "DELIVERY_SCHEDULING_REJECTED",
+                    "message": f"{error}. {detail_message}",
+                },
             ) from error
         except DeliverySchedulingUncertain as error:
             _record_delivery_uncertainty(db, saga.id, error)
@@ -267,6 +285,78 @@ def _record_delivery_failure(
     saga.current_step = "DELIVERY_SCHEDULING_FAILED"
     saga.error = str(error)
     rental.status = "FAILED"
+    db.commit()
+
+
+def _compensate_delivery_failure(
+    db: Session,
+    saga_id: str,
+    rental_id: int,
+    equipment_id: int,
+    error: Exception,
+) -> None:
+    saga = db.get(Saga, saga_id)
+    rental = db.get(Rental, rental_id)
+    if saga is None or rental is None:
+        raise RuntimeError(
+            "No se encontró la Saga o el arriendo al compensar Entregas."
+        )
+
+    saga.status = "COMPENSATING"
+    saga.current_step = "REFUND_PAYMENT"
+    saga.error = str(error)
+    db.commit()
+
+    if saga.payment_id is None:
+        saga.status = "COMPENSATION_FAILED"
+        saga.current_step = "REFUND_PAYMENT"
+        saga.error = f"{error}; no existe paymentId confirmado."
+        db.commit()
+        return
+
+    refund_key = f"{saga.idempotency_key}-refund"
+    try:
+        refund = reembolsar_pago(
+            payment_id=saga.payment_id,
+            rental_id=rental_id,
+            idempotency_key=refund_key,
+        )
+    except (RefundRejected, RefundUncertain) as refund_error:
+        saga = db.get(Saga, saga_id)
+        saga.status = "COMPENSATION_FAILED"
+        saga.current_step = "REFUND_PAYMENT"
+        saga.error = f"{error}; reembolso incierto: {refund_error}"
+        db.commit()
+        return
+
+    saga = db.get(Saga, saga.id)
+    saga.refund_id = refund.refund_id
+    saga.refund_status = refund.status
+
+    if refund.status in {"REFUND_PENDING", "UNKNOWN"}:
+        saga.status = "IN_DOUBT"
+        saga.current_step = "REFUND_PAYMENT_IN_DOUBT"
+        saga.error = f"{error}; el reembolso requiere conciliación."
+        db.commit()
+        return
+
+    try:
+        grpc_client.liberar_unidad(equipment_id)
+    except HTTPException as release_error:
+        saga.status = "COMPENSATION_FAILED"
+        saga.current_step = "RELEASE_EQUIPMENT"
+        saga.error = (
+            f"{error}; reembolso confirmado, pero la liberación falló: "
+            f"{_http_error_message(release_error)}"
+        )
+        db.commit()
+        return
+
+    rental = db.get(Rental, rental_id)
+    rental.status = "FAILED"
+    saga.status = "COMPENSATED"
+    saga.current_step = "COMPENSATION_COMPLETED"
+    saga.error = str(error)
     db.commit()
 
 
@@ -335,6 +425,39 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
         "DELIVERY_SCHEDULED",
     }:
         return saga
+    if saga.status in {"COMPENSATION_FAILED", "IN_DOUBT"} and (
+        saga.current_step in {
+            "REFUND_PAYMENT",
+            "RELEASE_EQUIPMENT",
+            "REFUND_PAYMENT_IN_DOUBT",
+        }
+    ):
+        if saga.refund_status == "REFUNDED":
+            try:
+                grpc_client.liberar_unidad(rental.equipment_id)
+            except HTTPException as release_error:
+                saga.status = "COMPENSATION_FAILED"
+                saga.current_step = "RELEASE_EQUIPMENT"
+                saga.error = (
+                    "El reembolso ya fue confirmado, pero la liberación falló: "
+                    f"{_http_error_message(release_error)}"
+                )
+                db.commit()
+                return saga
+            rental.status = "FAILED"
+            saga.status = "COMPENSATED"
+            saga.current_step = "COMPENSATION_COMPLETED"
+            db.commit()
+            return saga
+
+        _compensate_delivery_failure(
+            db,
+            saga.id,
+            rental.id,
+            rental.equipment_id,
+            ValueError(saga.error or "Requiere conciliación de compensación."),
+        )
+        return db.get(Saga, saga.id)
     if saga.status in {"COMPENSATING", "COMPENSATION_FAILED", "FAILED"}:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -363,7 +486,13 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
                 idempotency_key=saga.idempotency_key,
             )
         except DeliverySchedulingRejected as error:
-            _record_delivery_failure(db, saga.id, rental.id, error)
+            _compensate_delivery_failure(
+                db,
+                saga.id,
+                rental.id,
+                rental.equipment_id,
+                error,
+            )
             return db.get(Saga, saga.id)
         except DeliverySchedulingUncertain as error:
             _record_delivery_uncertainty(db, saga.id, error)
@@ -487,7 +616,13 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
                     idempotency_key=saga.idempotency_key,
                 )
             except DeliverySchedulingRejected as error:
-                _record_delivery_failure(db, saga.id, rental.id, error)
+                _compensate_delivery_failure(
+                    db,
+                    saga.id,
+                    rental.id,
+                    rental.equipment_id,
+                    error,
+                )
                 return db.get(Saga, saga.id)
             except DeliverySchedulingUncertain as error:
                 _record_delivery_uncertainty(db, saga.id, error)

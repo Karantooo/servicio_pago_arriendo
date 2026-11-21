@@ -18,11 +18,23 @@ def ensure_saga_delivery_column() -> None:
         return
     columns = {column["name"] for column in inspector.get_columns("sagas")}
     if "delivery_id" in columns:
-        return
+        pass
+    else:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE sagas ADD COLUMN delivery_id BIGINT")
+            )
+
+    columns = {column["name"] for column in inspector.get_columns("sagas")}
     with engine.begin() as connection:
-        connection.execute(
-            text("ALTER TABLE sagas ADD COLUMN delivery_id BIGINT")
-        )
+        if "refund_id" not in columns:
+            connection.execute(
+                text("ALTER TABLE sagas ADD COLUMN refund_id BIGINT")
+            )
+        if "refund_status" not in columns:
+            connection.execute(
+                text("ALTER TABLE sagas ADD COLUMN refund_status VARCHAR(20)")
+            )
 
 def get_db():
     db = SessionLocal()

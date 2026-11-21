@@ -110,6 +110,8 @@ class SagaResponse(BaseModel):
     status: str
     currentStep: str
     deliveryId: int | None = None
+    refundId: int | None = None
+    refundStatus: str | None = None
     error: str | None = None
     createdAt: AwareDatetime
     updatedAt: AwareDatetime
