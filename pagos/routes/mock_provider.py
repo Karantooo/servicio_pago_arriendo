@@ -1,6 +1,8 @@
+import os
+import secrets
 from typing import Dict
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 from pagos.providers import get_provider
@@ -8,6 +10,36 @@ from pagos.providers.mock_provider import MockProvider
 from pagos.resilience import circuit_breaker
 
 router = APIRouter()
+
+
+def require_admin_key(
+    admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> None:
+    expected_key = os.getenv("ADMIN_API_KEY")
+    if not expected_key:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "ADMIN_AUTH_NOT_CONFIGURED",
+                "message": "La autenticación administrativa no está configurada.",
+            },
+        )
+    if not admin_key:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "ADMIN_KEY_REQUIRED",
+                "message": "Se requiere el header X-Admin-Key.",
+            },
+        )
+    if not secrets.compare_digest(admin_key, expected_key):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "INVALID_ADMIN_KEY",
+                "message": "La API Key de administrador es inválida.",
+            },
+        )
 
 
 def _mock_provider() -> MockProvider:
@@ -28,7 +60,10 @@ class ProviderModeRequest(BaseModel):
 
 
 @router.post("/payments/mock-provider/mode")
-async def set_provider_mode(mode: ProviderModeRequest) -> Dict[str, str]:
+async def set_provider_mode(
+    mode: ProviderModeRequest,
+    _: None = Depends(require_admin_key),
+) -> Dict[str, str]:
     try:
         current = _mock_provider().set_mode(mode.mode)
         return {"status": "ok", "mode": current}
