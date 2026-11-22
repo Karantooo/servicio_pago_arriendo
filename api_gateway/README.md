@@ -12,6 +12,26 @@ Desde la raíz del repositorio:
 docker compose up --build
 ```
 
+### Gateway aislado con backends mock
+
+Para probar solo KrakenD y sus ejemplos de JWT, agregación y circuit breaker,
+se conserva un Compose opcional:
+
+```bash
+docker compose -f api_gateway/docker-compose.gateway.yml up --build
+```
+
+Este entorno usa [krakend.mock.json](./krakend.mock.json) y los backends mock
+locales; no enruta a los servicios del dominio. Para apagarlo:
+
+```bash
+docker compose -f api_gateway/docker-compose.gateway.yml down
+```
+
+Ambos entornos publican por defecto el puerto `8080`, por lo que no deben
+ejecutarse simultáneamente con ese mismo puerto. Se puede cambiar el puerto
+publicado del Compose opcional con `KRAKEND_PORT=8082`.
+
 Las rutas de dominio requieren JWT HS256 y la `API-Key` de cliente/admin que
 usan los servicios existentes. KrakenD valida el JWT y reenvía `API-Key` al
 backend; no devuelve ese header ni las credenciales en la respuesta. El endpoint
