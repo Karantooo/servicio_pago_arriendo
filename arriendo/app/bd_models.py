@@ -33,6 +33,7 @@ class Rental(Base):
     equipment_id = Column(Integer, nullable=False, index=True)
     start_date = Column(DateTime(timezone=True), nullable=False)
     end_date = Column(DateTime(timezone=True), nullable=False)
+    equipment_reservation_id = Column(String(36), nullable=True)
     amount_rent = Column(BigInteger, nullable=True)
     amount_deposit = Column(BigInteger, nullable=True)
     status = Column(String(20), nullable=False, default="ACTIVE")  # ACTIVE, COMPLETED, CANCELLED, PENDING, FAILED, CANCELLING, RETURNING

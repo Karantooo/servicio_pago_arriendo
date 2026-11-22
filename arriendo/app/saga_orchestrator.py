@@ -105,11 +105,13 @@ def create_rental(
     idempotency_key: str,
     request_fingerprint: str,
 ) -> tuple[Rental, PaymentCheckout]:
+    saga_id = str(uuid4())
     rental = Rental(
         client_id=client_id,
         equipment_id=equipment_id,
         start_date=start_date,
         end_date=end_date,
+        equipment_reservation_id=saga_id,
         amount_rent=amount_rent,
         amount_deposit=amount_deposit,
         status="PENDING",
@@ -118,7 +120,7 @@ def create_rental(
     db.flush()
 
     saga = Saga(
-        id=str(uuid4()),
+        id=saga_id,
         rental_id=rental.id,
         operation="CREATE",
         status="STARTED",
@@ -145,7 +147,7 @@ def create_rental(
     db.refresh(rental)
 
     try:
-        grpc_client.reservar_unidad(equipment_id)
+        grpc_client.reservar_unidad(equipment_id, rental.equipment_reservation_id)
     except HTTPException as error:
         _record_remote_failure(db, saga.id, rental.id, error)
         raise
@@ -165,7 +167,7 @@ def create_rental(
     except SQLAlchemyError as persistence_error:
         db.rollback()
         compensation_status = _compensate_create(
-            db, saga.id, rental.id, equipment_id, persistence_error
+            db, saga.id, rental.id, persistence_error
         )
         message = (
             "La reserva de Equipos fue compensada."
@@ -186,7 +188,7 @@ def create_rental(
     except SQLAlchemyError as persistence_error:
         db.rollback()
         compensation_status = _compensate_create(
-            db, saga.id, rental.id, equipment_id, persistence_error
+            db, saga.id, rental.id, persistence_error
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -208,7 +210,7 @@ def create_rental(
             idempotency_key=saga.idempotency_key,
         )
     except PaymentStartRejected as error:
-        _compensate_rejected_payment(db, saga.id, rental.id, equipment_id, error)
+        _compensate_rejected_payment(db, saga.id, rental.id, error)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={"code": "PAYMENT_REJECTED", "message": str(error)},
@@ -264,7 +266,6 @@ def create_rental(
                 db,
                 saga.id,
                 rental.id,
-                equipment_id,
                 error,
             )
             _record_saga_event(
@@ -312,6 +313,13 @@ def create_rental(
     return rental, checkout
 
 
+def _release_rental_equipment(rental: Rental) -> None:
+    if rental.equipment_reservation_id is None:
+        grpc_client.liberar_unidad(rental.equipment_id)
+    else:
+        grpc_client.liberar_unidad(rental.equipment_id, rental.equipment_reservation_id)
+
+
 def _record_payment_uncertainty(db: Session, saga_id: str, error: Exception) -> None:
     db.rollback()
     saga = db.get(Saga, saga_id)
@@ -347,7 +355,6 @@ def _compensate_delivery_failure(
     db: Session,
     saga_id: str,
     rental_id: int,
-    equipment_id: int,
     error: Exception,
 ) -> None:
     saga = db.get(Saga, saga_id)
@@ -404,7 +411,7 @@ def _compensate_delivery_failure(
         return
 
     try:
-        grpc_client.liberar_unidad(equipment_id)
+        _release_rental_equipment(db.get(Rental, rental_id))
     except HTTPException as release_error:
         saga.status = "COMPENSATION_FAILED"
         saga.current_step = "RELEASE_EQUIPMENT"
@@ -457,7 +464,7 @@ def _record_delivery_uncertainty(
 
 
 def _compensate_rejected_payment(
-    db: Session, saga_id: str, rental_id: int, equipment_id: int, error: Exception
+    db: Session, saga_id: str, rental_id: int, error: Exception
 ) -> None:
     saga = db.get(Saga, saga_id)
     saga.status = "COMPENSATING"
@@ -465,7 +472,7 @@ def _compensate_rejected_payment(
     saga.error = str(error)
     db.commit()
     try:
-        grpc_client.liberar_unidad(equipment_id)
+        _release_rental_equipment(db.get(Rental, rental_id))
     except HTTPException as release_error:
         saga = db.get(Saga, saga_id)
         saga.status = "COMPENSATION_FAILED"
@@ -534,7 +541,7 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
         if payment_is_refunded:
             if saga.equipment_release_status != "COMPLETED":
                 try:
-                    grpc_client.liberar_unidad(rental.equipment_id)
+                    _release_rental_equipment(rental)
                 except HTTPException as release_error:
                     saga.status = "COMPENSATION_FAILED"
                     saga.current_step = "RELEASE_EQUIPMENT"
@@ -557,7 +564,6 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
             db,
             saga.id,
             rental.id,
-            rental.equipment_id,
             ValueError(saga.error or "Requiere conciliación de compensación."),
         )
         return db.get(Saga, saga.id)
@@ -593,7 +599,6 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
                 db,
                 saga.id,
                 rental.id,
-                rental.equipment_id,
                 error,
             )
             return db.get(Saga, saga.id)
@@ -632,7 +637,7 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
                 require_checkout=False,
             )
         except PaymentStartRejected as error:
-            _compensate_failed_payment(db, saga.id, rental.id, rental.equipment_id, error)
+            _compensate_failed_payment(db, saga.id, rental.id, error)
             return db.get(Saga, saga.id)
         except PaymentStartUncertain as error:
             _mark_payment_in_doubt(db, saga.id, error)
@@ -685,8 +690,7 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
 
     if payment.status in {"FAILED", "CANCELLED"}:
         _compensate_failed_payment(
-            db, saga.id, rental.id, rental.equipment_id,
-            ValueError(f"Pago {payment.status}"),
+            db, saga.id, rental.id, ValueError(f"Pago {payment.status}"),
         )
         return db.get(Saga, saga.id)
 
@@ -723,7 +727,6 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
                     db,
                     saga.id,
                     rental.id,
-                    rental.equipment_id,
                     error,
                 )
                 return db.get(Saga, saga.id)
@@ -777,7 +780,7 @@ def _mark_payment_in_doubt(db: Session, saga_id: str, error: Exception) -> None:
 
 
 def _compensate_failed_payment(
-    db: Session, saga_id: str, rental_id: int, equipment_id: int, error: Exception
+    db: Session, saga_id: str, rental_id: int, error: Exception
 ) -> None:
     claimed = db.execute(
         update(Saga)
@@ -792,7 +795,7 @@ def _compensate_failed_payment(
     if not claimed:
         return
     try:
-        grpc_client.liberar_unidad(equipment_id)
+        _release_rental_equipment(db.get(Rental, rental_id))
     except HTTPException as release_error:
         saga = db.get(Saga, saga_id)
         saga.status = "COMPENSATION_FAILED"
@@ -847,7 +850,7 @@ def finish_rental(db: Session, rental_id: int, final_status: str) -> Rental:
 
     equipment_id = rental.equipment_id
     try:
-        grpc_client.liberar_unidad(rental.equipment_id)
+        _release_rental_equipment(rental)
     except HTTPException as error:
         _record_remote_failure(
             db, saga.id, rental.id, error, restore_status=previous_status
@@ -925,12 +928,11 @@ def _compensate_create(
     db: Session,
     saga_id: str,
     rental_id: int,
-    equipment_id: int,
     persistence_error: SQLAlchemyError,
 ) -> str:
     _mark_compensating(db, saga_id, persistence_error)
     try:
-        grpc_client.liberar_unidad(equipment_id)
+        _release_rental_equipment(db.get(Rental, rental_id))
     except HTTPException as compensation_error:
         _record_compensation_failure(
             db,
@@ -968,8 +970,13 @@ def _compensate_finish(
     persistence_error: SQLAlchemyError,
 ) -> str:
     _mark_compensating(db, saga_id, persistence_error)
+    rental = db.get(Rental, rental_id)
     try:
-        grpc_client.reservar_unidad(equipment_id)
+        if rental.equipment_reservation_id is None:
+            grpc_client.reservar_unidad(equipment_id)
+        else:
+            grpc_client.reservar_unidad(equipment_id, saga_id)
+            rental.equipment_reservation_id = saga_id
     except HTTPException as compensation_error:
         _record_compensation_failure(
             db,

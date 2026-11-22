@@ -1,8 +1,9 @@
 from datetime import datetime
 
 from app.models.base import Base
-from sqlalchemy import Boolean, CheckConstraint, DateTime, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Boolean, CheckConstraint, DateTime, String, Text, func, update
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
 
 class Equipo(Base):
@@ -63,12 +64,19 @@ class Equipo(Base):
     )
 
 
-from sqlalchemy import update
-from sqlalchemy.orm import Session
+class ReservaEquipo(Base):
+    __tablename__ = "reservas_equipos"
+
+    reserva_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    equipo_id: Mapped[int] = mapped_column(nullable=False)
+    liberada: Mapped[bool] = mapped_column(nullable=False, default=False)
 
 
-def reservar_equipo(db: Session, equipo_id: int) -> bool:
+class ReservaEquipoEnConflicto(Exception):
+    pass
 
+
+def _descontar_unidad(db: Session, equipo_id: int) -> bool:
     stmt = (
         update(Equipo)
         .where(
@@ -78,26 +86,77 @@ def reservar_equipo(db: Session, equipo_id: int) -> bool:
         )
         .values(unidades_disponibles=Equipo.unidades_disponibles - 1)
     )
-
-    result = db.execute(stmt)
-    db.commit()
-
-    return result.rowcount == 1
+    return db.execute(stmt).rowcount == 1
 
 
-def liberar_equipo(db: Session, equipo_id: int) -> bool:
-
+def _devolver_unidad(db: Session, equipo_id: int, solo_activo: bool = True) -> bool:
     stmt = (
         update(Equipo)
         .where(
             Equipo.equipo_id == equipo_id,
-            Equipo.activo == True,
-            Equipo.unidades_disponibles + 1 <= Equipo.cantidad_total,
+            Equipo.unidades_disponibles < Equipo.cantidad_total,
         )
         .values(unidades_disponibles=Equipo.unidades_disponibles + 1)
     )
+    if solo_activo:
+        stmt = stmt.where(Equipo.activo == True)
+    return db.execute(stmt).rowcount == 1
 
-    result = db.execute(stmt)
+
+def reservar_equipo(db: Session, equipo_id: int) -> bool:
+    reservado = _descontar_unidad(db, equipo_id)
+    if reservado:
+        db.commit()
+    else:
+        db.rollback()
+    return reservado
+
+
+def liberar_equipo(db: Session, equipo_id: int) -> bool:
+    liberado = _devolver_unidad(db, equipo_id)
+    if liberado:
+        db.commit()
+    else:
+        db.rollback()
+    return liberado
+
+
+def reservar_equipo_identificado(db: Session, equipo_id: int, reserva_id: str) -> bool:
+    creada = db.execute(
+        insert(ReservaEquipo)
+        .values(reserva_id=reserva_id, equipo_id=equipo_id, liberada=False)
+        .on_conflict_do_nothing(index_elements=[ReservaEquipo.reserva_id])
+        .returning(ReservaEquipo.reserva_id)
+    ).scalar_one_or_none()
+
+    if creada is None:
+        existente = db.get(ReservaEquipo, reserva_id)
+        if existente.equipo_id != equipo_id:
+            raise ReservaEquipoEnConflicto
+        # Conservar el historial evita que un reintento tardío reactive la reserva.
+        return True
+
+    if not _descontar_unidad(db, equipo_id):
+        db.rollback()
+        return False
+
     db.commit()
+    return True
 
-    return result.rowcount == 1
+
+def liberar_equipo_identificado(db: Session, equipo_id: int, reserva_id: str) -> bool:
+    reserva = db.get(ReservaEquipo, reserva_id, with_for_update=True)
+    if reserva is None:
+        raise LookupError(reserva_id)
+    if reserva.equipo_id != equipo_id:
+        raise ReservaEquipoEnConflicto
+    if reserva.liberada:
+        return True
+
+    if not _devolver_unidad(db, equipo_id, solo_activo=False):
+        db.rollback()
+        return False
+
+    reserva.liberada = True
+    db.commit()
+    return True

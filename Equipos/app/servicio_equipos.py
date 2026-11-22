@@ -1,6 +1,14 @@
 import grpc
 from app.database import SessionLocal
-from app.models.equipo import Equipo, liberar_equipo, reservar_equipo
+from app.models.equipo import (
+    Equipo,
+    ReservaEquipoEnConflicto,
+    liberar_equipo,
+    liberar_equipo_identificado,
+    reservar_equipo,
+    reservar_equipo_identificado,
+)
+from uuid import UUID
 from generated import equipos_pb2, equipos_pb2_grpc
 from sqlalchemy.orm.exc import MultipleResultsFound, NoResultFound
 from google.protobuf import empty_pb2
@@ -152,4 +160,36 @@ class ServicioEquipos(equipos_pb2_grpc.ServicioEquiposServicer):
                 "No se puede liberar el equipo",
             )
 
+        return empty_pb2.Empty()
+
+    def ReservarEquipoIdentificado(self, request, context):
+        return self._ejecutar_reserva_identificada(
+            request, context, reservar_equipo_identificado, "reservar"
+        )
+
+    def LiberarEquipoIdentificado(self, request, context):
+        return self._ejecutar_reserva_identificada(
+            request, context, liberar_equipo_identificado, "liberar"
+        )
+
+    def _ejecutar_reserva_identificada(self, request, context, operacion, accion):
+        try:
+            reserva_id = str(UUID(request.reserva_id))
+        except ValueError:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "reserva_id debe ser un UUID.")
+        if request.id <= 0:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "El ID de equipo debe ser positivo.")
+
+        try:
+            with SessionLocal() as db:
+                completada = operacion(db, request.id, reserva_id)
+        except ReservaEquipoEnConflicto:
+            context.abort(grpc.StatusCode.ALREADY_EXISTS, "La reserva pertenece a otro equipo.")
+        except LookupError:
+            context.abort(grpc.StatusCode.NOT_FOUND, "La reserva no existe.")
+        except Exception:
+            context.abort(grpc.StatusCode.INTERNAL, f"Error al {accion} el equipo.")
+
+        if not completada:
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, f"No se puede {accion} el equipo.")
         return empty_pb2.Empty()

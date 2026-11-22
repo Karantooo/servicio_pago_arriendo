@@ -11,12 +11,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.routers.v1 import rentals, clients
 from app.routers.v2 import rentals as rentals_v2
 from app.routers.v2 import tariffs as tariffs_v2
-from app.database import engine, Base, ensure_saga_delivery_column
+from app.database import Base, engine, ensure_rental_reservation_column, ensure_saga_delivery_column
 
 from app.models import HealthResponse
 
 Base.metadata.create_all(bind=engine)
 ensure_saga_delivery_column()
+ensure_rental_reservation_column()
     
 app = FastAPI(
     title='API ArriendaPro',

@@ -43,6 +43,15 @@ def ensure_saga_delivery_column() -> None:
                 )
             )
 
+def ensure_rental_reservation_column() -> None:
+    columns = {column["name"] for column in inspect(engine).get_columns("rentals")}
+    if "equipment_reservation_id" not in columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE rentals ADD COLUMN equipment_reservation_id VARCHAR(36)")
+            )
+
+
 def get_db():
     db = SessionLocal()
     try:

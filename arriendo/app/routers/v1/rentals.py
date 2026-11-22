@@ -270,7 +270,10 @@ def _finish_rental(
     response = build_rental_response(rental)
 
     try:
-        liberar_unidad(rental.equipment_id)
+        if rental.equipment_reservation_id is None:
+            liberar_unidad(rental.equipment_id)
+        else:
+            liberar_unidad(rental.equipment_id, rental.equipment_reservation_id)
         db.commit()
     except Exception:
         db.rollback()

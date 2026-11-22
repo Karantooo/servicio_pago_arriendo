@@ -3,7 +3,7 @@ from concurrent import futures
 import grpc
 import pytest
 from app.database import SessionLocal
-from app.models.equipo import Equipo
+from app.models.equipo import Equipo, ReservaEquipo
 from app.servicio_equipos import ServicioEquipos
 from generated import equipos_pb2_grpc
 
@@ -22,6 +22,7 @@ def limpiar_equipos():
     session = SessionLocal()
 
     try:
+        session.query(ReservaEquipo).delete()
         session.query(Equipo).delete()
         session.commit()
     finally:

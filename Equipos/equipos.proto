@@ -25,7 +25,16 @@ message EquipoDisponibilidad {
   int32 unidades_disponibles = 2;
 }
 
+// La misma reserva_id identifica la reserva y su liberación.
+message ReservaEquipoRequest {
+  int32 id = 1;
+  string reserva_id = 2;
+}
+
 service ServicioEquipos {
+  rpc ReservarEquipoIdentificado(ReservaEquipoRequest) returns (google.protobuf.Empty);
+  rpc LiberarEquipoIdentificado(ReservaEquipoRequest) returns (google.protobuf.Empty);
+
   // Consulta un equipo por su ID.
   rpc ConsultarEquipo(EquipoRequest) returns (Equipo);
 

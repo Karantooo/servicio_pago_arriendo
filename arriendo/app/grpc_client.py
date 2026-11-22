@@ -142,11 +142,18 @@ def _raise_grpc_error(
     ) from error
 
 
-def reservar_unidad(equipment_id: int) -> None:
+def reservar_unidad(equipment_id: int, reservation_id: str | None = None) -> None:
     stub = get_grpc_stub()
     request = equipos_pb2.EquipoRequest(id=equipment_id)
 
     try:
+        if reservation_id is not None:
+            stub.ReservarEquipoIdentificado(
+                equipos_pb2.ReservaEquipoRequest(id=equipment_id, reserva_id=reservation_id),
+                timeout=GRPC_TIMEOUT_SECONDS,
+            )
+            return
+
         disponibilidad = stub.ConsultarDisponibilidadEquipo(
             request,
             timeout=GRPC_TIMEOUT_SECONDS,
@@ -172,11 +179,17 @@ def reservar_unidad(equipment_id: int) -> None:
         _raise_grpc_error(error, equipment_id, "reserve")
 
 
-def liberar_unidad(equipment_id: int) -> None:
+def liberar_unidad(equipment_id: int, reservation_id: str | None = None) -> None:
     stub = get_grpc_stub()
     request = equipos_pb2.EquipoRequest(id=equipment_id)
 
     try:
-        stub.LiberarEquipo(request, timeout=GRPC_TIMEOUT_SECONDS)
+        if reservation_id is None:
+            stub.LiberarEquipo(request, timeout=GRPC_TIMEOUT_SECONDS)
+        else:
+            stub.LiberarEquipoIdentificado(
+                equipos_pb2.ReservaEquipoRequest(id=equipment_id, reserva_id=reservation_id),
+                timeout=GRPC_TIMEOUT_SECONDS,
+            )
     except grpc.RpcError as error:
         _raise_grpc_error(error, equipment_id, "release")

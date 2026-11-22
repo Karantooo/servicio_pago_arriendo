@@ -585,3 +585,40 @@ class TestFlujoCombinado:
         equipo_response = next(e for e in equipos if e.id == equipo.equipo_id)
 
         assert equipo_response.unidades_disponibles == (unidades_antes + 1)
+
+
+def test_reserva_identificada_con_reintentos_concurrentes(grpc_channel, crear_equipo):
+    from uuid import uuid4
+
+    crear_equipo(equipo_id=1, cantidad_total=1, unidades_disponibles=1)
+    crear_equipo(equipo_id=2, cantidad_total=1, unidades_disponibles=1)
+    stub = equipos_pb2_grpc.ServicioEquiposStub(grpc_channel)
+    reserva_id = str(uuid4())
+    reserva = equipos_pb2.ReservaEquipoRequest(id=1, reserva_id=reserva_id)
+    consulta = equipos_pb2.EquipoRequest(id=1)
+
+    intentos = [stub.ReservarEquipoIdentificado.future(reserva, timeout=5) for _ in range(2)]
+    for intento in intentos:
+        intento.result()
+    assert stub.ConsultarDisponibilidadEquipo(consulta).unidades_disponibles == 0
+
+    otro_equipo = equipos_pb2.ReservaEquipoRequest(id=2, reserva_id=reserva_id)
+    with pytest.raises(grpc.RpcError) as error:
+        stub.ReservarEquipoIdentificado(otro_equipo)
+    assert error.value.code() == grpc.StatusCode.ALREADY_EXISTS
+    with pytest.raises(grpc.RpcError) as error:
+        stub.LiberarEquipoIdentificado(otro_equipo)
+    assert error.value.code() == grpc.StatusCode.ALREADY_EXISTS
+
+    intentos = [stub.LiberarEquipoIdentificado.future(reserva, timeout=5) for _ in range(2)]
+    for intento in intentos:
+        intento.result()
+    assert stub.ConsultarDisponibilidadEquipo(consulta).unidades_disponibles == 1
+
+    otra_reserva = equipos_pb2.ReservaEquipoRequest(id=1, reserva_id=str(uuid4()))
+    stub.ReservarEquipoIdentificado(otra_reserva)
+    stub.LiberarEquipoIdentificado(reserva)
+    assert stub.ConsultarDisponibilidadEquipo(consulta).unidades_disponibles == 0
+    stub.LiberarEquipoIdentificado(otra_reserva)
+    stub.ReservarEquipoIdentificado(reserva)
+    assert stub.ConsultarDisponibilidadEquipo(consulta).unidades_disponibles == 1
