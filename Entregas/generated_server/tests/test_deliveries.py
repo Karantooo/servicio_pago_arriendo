@@ -14,7 +14,8 @@ def _payload(**overrides):
         "clientId": 20,
         "equipmentId": 30,
         "scheduledAt": (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(),
-        "paymentStatus": "UNPAID",
+        "paymentStatus": "PAID",
+        "paymentId": 42,
     }
     return {**payload, **overrides}
 
@@ -35,7 +36,17 @@ def _mock_get_rental(monkeypatch, rental=None):
     async def get_rental(self, rental_id):
         return rental or _mock_rental()
 
+    async def get_saga(self, rental_id):
+        return {
+            "operation": "CREATE",
+            "status": "IN_PROGRESS",
+            "currentStep": "PAYMENT_CONFIRMED",
+            "paymentStatus": "CHARGED",
+            "paymentId": 42,
+        }
+
     monkeypatch.setattr("entregas_api.rentals_client.RentalsClient.get_rental", get_rental)
+    monkeypatch.setattr("entregas_api.rentals_client.RentalsClient.get_saga", get_saga)
 
 
 def _create(client, key="delivery-key", payload=None):
@@ -126,6 +137,8 @@ def test_paid_delivery_accepts_pending_scheduling(client, monkeypatch, status, s
             "operation": "CREATE",
             "status": status,
             "currentStep": step,
+            "paymentStatus": "CHARGED",
+            "paymentId": 42,
         }
 
     monkeypatch.setattr("entregas_api.rentals_client.RentalsClient.get_saga", get_saga)
@@ -137,25 +150,24 @@ def test_paid_delivery_accepts_pending_scheduling(client, monkeypatch, status, s
     assert response.json()["paymentId"] == 42
 
 
-def test_deliver_requires_payment_and_notifies_rentals(client, monkeypatch):
+@pytest.mark.parametrize("override", [
+    {"paymentStatus": "UNPAID"},
+    {"paymentId": None},
+    {"paymentId": 999},
+])
+def test_create_rejects_missing_or_mismatched_payment(client, monkeypatch, override):
+    _mock_get_rental(monkeypatch)
+    response = _create(client, payload=_payload(**override))
+    assert response.status_code == 409
+    assert response.json()["code"] == "PAYMENT_REQUIRED"
+    assert client.get("/v1/rentals/10/delivery", headers=READONLY_HEADERS).status_code == 404
+
+
+def test_deliver_notifies_rentals(client, monkeypatch):
     _mock_get_rental(monkeypatch)
     created = _create(client)
+    assert created.status_code == 201
     delivery_id = created.json()["id"]
-    pending = client.post(
-        f"/v1/deliveries/{delivery_id}/deliver",
-        headers=ADMIN_HEADERS,
-    )
-    assert pending.status_code == 409
-    assert pending.json()["code"] == "PAYMENT_REQUIRED"
-
-    paid = client.post(
-        f"/v1/deliveries/{delivery_id}/mark-paid",
-        headers=ADMIN_HEADERS,
-        json={"paymentId": 55},
-    )
-    assert paid.status_code == 200
-    assert paid.json()["paymentId"] == 55
-
     calls = []
 
     async def notify(self, rental_id, payload):
@@ -182,7 +194,6 @@ def test_deliver_requires_payment_and_notifies_rentals(client, monkeypatch):
     )
     assert [event["type"] for event in events.json()] == [
         "SCHEDULED",
-        "PAID",
         "DELIVERED",
     ]
 
@@ -190,11 +201,6 @@ def test_deliver_requires_payment_and_notifies_rentals(client, monkeypatch):
 def test_failed_rental_sync_can_be_reconciled(client, monkeypatch):
     _mock_get_rental(monkeypatch)
     delivery_id = _create(client).json()["id"]
-    client.post(
-        f"/v1/deliveries/{delivery_id}/mark-paid",
-        headers=ADMIN_HEADERS,
-    )
-
     async def fail_notification(self, rental_id, payload):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -305,6 +311,30 @@ def test_reschedule_and_cancel_notify_arriendos(client, monkeypatch):
     assert cancelled.json()["status"] == "CANCELLED"
     assert cancelled.json()["rentalSyncStatus"] == "SYNCED"
     assert calls[0]["status"] == "CANCELLED"
+
+
+def test_reschedule_rejects_unpaid_legacy_delivery(client, monkeypatch):
+    from entregas_api.database import SessionLocal
+    from entregas_api.db_models import Delivery
+
+    _mock_get_rental(monkeypatch)
+    delivery_id = _create(client).json()["id"]
+    with SessionLocal() as db:
+        delivery = db.get(Delivery, delivery_id)
+        delivery.payment_status = "UNPAID"
+        delivery.payment_id = None
+        original_date = delivery.scheduled_at
+        db.commit()
+
+    response = client.put(
+        f"/v1/deliveries/{delivery_id}/schedule",
+        headers=ADMIN_HEADERS,
+        json={"scheduledAt": (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "PAYMENT_REQUIRED"
+    with SessionLocal() as db:
+        assert db.get(Delivery, delivery_id).scheduled_at == original_date
 
 
 def test_validation_errors_use_contract_status_code(client):

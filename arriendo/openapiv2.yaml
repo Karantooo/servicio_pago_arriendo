@@ -1191,6 +1191,12 @@ components:
           - COMPENSATION_FAILED
         currentStep:
           type: string
+        paymentId:
+          type: integer
+          nullable: true
+        paymentStatus:
+          type: string
+          nullable: true
         deliveryId:
           type: integer
           nullable: true

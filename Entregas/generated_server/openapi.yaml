@@ -128,7 +128,8 @@ paths:
         - el arriendo existe y `clientId` y `equipmentId` coinciden,
         - el arriendo no está cancelado, finalizado ni fallido,
         - `scheduledAt` es futura y no posterior al `endDate` del arriendo,
-        - si `paymentStatus` es `PAID`, la Saga del arriendo está esperando la Entrega,
+        - `paymentStatus` es `PAID` y `paymentId` coincide con el cobro confirmado por la Saga del arriendo,
+        - la Saga admite el agendamiento,
         - no existe ya una entrega para ese arriendo.
       operationId: createDelivery
       parameters:
@@ -980,7 +981,7 @@ components:
         paymentStatus:
           $ref: "#/components/schemas/PaymentStatus"
         paymentId:
-          description: "ID del cobro en Pagos, si la entrega se crea ya pagada"
+          description: "ID del cobro confirmado en Pagos, obligatorio para agendar"
           example: 9001
           format: int64
           nullable: true

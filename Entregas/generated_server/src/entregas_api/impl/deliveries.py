@@ -143,7 +143,21 @@ def _rental_is_ready(rental: dict[str, Any], request: DeliveryRequest) -> dateti
     return scheduled_at
 
 
-def _validate_paid_saga(saga: dict[str, Any]) -> None:
+def _require_confirmed_payment(saga: dict[str, Any], payment_id: int | None) -> None:
+    if (
+        saga.get("operation") != "CREATE"
+        or saga.get("paymentStatus") != "CHARGED"
+        or saga.get("refundStatus") is not None
+        or payment_id is None
+        or saga.get("paymentId") != payment_id
+    ):
+        raise _conflict(
+            "PAYMENT_REQUIRED",
+            "La entrega requiere el cobro confirmado de este arriendo.",
+        )
+
+
+def _validate_paid_saga(saga: dict[str, Any], payment_id: int | None) -> None:
     step = saga.get("currentStep")
     status = saga.get("status")
     ready = (
@@ -155,6 +169,7 @@ def _validate_paid_saga(saga: dict[str, Any]) -> None:
             "RENTAL_NOT_READY_FOR_DELIVERY",
             "La Saga del arriendo no está esperando la entrega.",
         )
+    _require_confirmed_payment(saga, payment_id)
 
 
 def _request_fingerprint(request: DeliveryRequest) -> str:
@@ -226,6 +241,8 @@ class DeliveriesApi(BaseDeliveriesApi):
     async def create_delivery(
         self, idempotency_key: str, delivery_request: DeliveryRequest
     ) -> DeliveryResponse:
+        if delivery_request.payment_status != PaymentStatus.PAID or delivery_request.payment_id is None:
+            raise _conflict("PAYMENT_REQUIRED", "Indique el pago confirmado del arriendo.")
         fingerprint = _request_fingerprint(delivery_request)
         with SessionLocal() as db:
             existing = _return_existing_idempotent(db, idempotency_key, fingerprint)
@@ -235,8 +252,10 @@ class DeliveriesApi(BaseDeliveriesApi):
         rentals = RentalsClient()
         rental = await rentals.get_rental(delivery_request.rental_id)
         scheduled_at = _rental_is_ready(rental, delivery_request)
-        if delivery_request.payment_status == PaymentStatus.PAID:
-            _validate_paid_saga(await rentals.get_saga(delivery_request.rental_id))
+        _validate_paid_saga(
+            await rentals.get_saga(delivery_request.rental_id),
+            delivery_request.payment_id,
+        )
 
         with SessionLocal() as db:
             row = Delivery(
@@ -347,6 +366,7 @@ class DeliveriesApi(BaseDeliveriesApi):
                     "Solo se puede reagendar una entrega en estado SCHEDULED.",
                 )
             rental_id = delivery.rental_id
+            payment_id = delivery.payment_id
             client_id = delivery.client_id
             equipment_id = delivery.equipment_id
 
@@ -371,6 +391,10 @@ class DeliveriesApi(BaseDeliveriesApi):
                 "scheduledAt no puede ser posterior al fin del arriendo."
             )
 
+        saga = await rentals.get_saga(rental_id)
+        if saga.get("status") not in {"IN_PROGRESS", "IN_DOUBT", "COMPLETED"}:
+            raise _conflict("RENTAL_NOT_READY_FOR_DELIVERY", "La Saga no admite reagendar la entrega.")
+        _require_confirmed_payment(saga, payment_id)
         with SessionLocal() as db:
             delivery = _get_delivery(db, deliveryId)
             if delivery.status != "SCHEDULED":
@@ -385,6 +409,8 @@ class DeliveriesApi(BaseDeliveriesApi):
                     "RENTAL_DATA_MISMATCH",
                     "Los datos del arriendo ya no coinciden con la entrega.",
                 )
+            if delivery.payment_id != payment_id:
+                raise _conflict("PAYMENT_REQUIRED", "El pago de la entrega cambió durante la validación.")
             old_scheduled_at = _utc(delivery.scheduled_at)
             delivery.scheduled_at = new_scheduled_at
             detail = (

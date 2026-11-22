@@ -505,6 +505,8 @@ def _build_saga_response(saga: Saga) -> SagaResponse:
         operation=saga.operation,
         status=saga.status,
         currentStep=saga.current_step,
+        paymentId=saga.payment_id,
+        paymentStatus=saga.checkout_status,
         deliveryId=saga.delivery_id,
         refundId=saga.refund_id,
         refundStatus=saga.refund_status,

@@ -109,6 +109,8 @@ class SagaResponse(BaseModel):
     operation: str
     status: str
     currentStep: str
+    paymentId: int | None = None
+    paymentStatus: str | None = None
     deliveryId: int | None = None
     refundId: int | None = None
     refundStatus: str | None = None
