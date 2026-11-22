@@ -11,11 +11,63 @@ servers:
 security:
 - APIKeyHeader: []
 tags:
+- description: Controles administrativos de pruebas
+  name: Admin
 - description: Agendamiento y entrega de arriendos
   name: Deliveries
 - description: Estado del servicio
   name: Health
 paths:
+  /admin/failure-injection:
+    post:
+      description: |-
+        Activa o desactiva fallas simuladas al agendar entregas.
+        Solo está disponible si DELIVERIES_ENABLE_FAILURE_INJECTION=true.
+        Requiere API Key de administrador.
+      operationId: configureFailureInjection
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - mode
+              properties:
+                mode:
+                  type: string
+                  enum:
+                  - NORMAL
+                  - FAIL_NEXT
+                  - ALWAYS_FAIL
+        required: true
+      responses:
+        "200":
+          description: Modo de inyección actualizado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  mode:
+                    type: string
+                    enum:
+                    - NORMAL
+                    - FAIL_NEXT
+                    - ALWAYS_FAIL
+        "400":
+          description: Modo de falla no válido
+        "401":
+          description: API Key ausente o inválida
+        "403":
+          description: Se requiere API Key admin
+        "404":
+          description: La inyección de fallas está deshabilitada
+      summary: Configurar fallas simuladas de agendamiento
+      tags:
+      - Admin
   /health:
     get:
       description: Endpoint público para el healthcheck de Docker. No depende de Arriendos
@@ -211,9 +263,17 @@ paths:
         "503":
           content:
             application/json:
+              examples:
+                simulated_delivery_failure:
+                  summary: Fallo inyectado para pruebas
+                  value:
+                    detail: Simulated delivery failure for testing
               schema:
-                $ref: "#/components/schemas/ServiceUnavailableError"
-          description: Servicio de Arriendos no disponible
+                type: object
+                properties:
+                  detail:
+                    type: string
+          description: Servicio de Arriendos no disponible o fallo simulado de pruebas
         "504":
           content:
             application/json:
