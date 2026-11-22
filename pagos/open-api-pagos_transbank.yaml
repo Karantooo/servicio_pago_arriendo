@@ -677,6 +677,8 @@ components:
             - PENDING
             - CHARGED
             - UNKNOWN
+            - PAYMENT_PENDING_RETRY
+            - CONFIRMATION_PENDING_RETRY
           example: PENDING
         buy_order:
           type: string
@@ -732,6 +734,7 @@ components:
             - FAILED
             - CANCELLED
             - UNKNOWN
+            - CONFIRMATION_PENDING_RETRY
             - REFUND_PENDING
             - REFUNDED
           example: CHARGED
@@ -864,7 +867,17 @@ components:
         status:
           type: string
           description: Estado asociado a la operación.
-          example: PENDING
+          example: PAYMENT_PENDING_RETRY
+        payment_id:
+          type: integer
+          format: int64
+          description: ID de pago para consultar la operación persistida.
+          example: 501
+        rental_id:
+          type: integer
+          format: int64
+          description: ID del arriendo asociado.
+          example: 1001
         retryable:
           type: boolean
           description: Indica si la operación puede reintentarse.

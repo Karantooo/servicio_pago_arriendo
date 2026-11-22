@@ -4,12 +4,13 @@ from pagos.models import utc_now
 from pagos.rentals_client import notify_payment_result
 from pagos.providers import get_provider
 from pagos.providers.base import ProviderUnavailable
-from pagos.resilience import bulkhead, circuit_breaker, invoke_provider_call
+from pagos.resilience import CircuitOpenError, circuit_breaker, invoke_provider_call
 from pagos.storage import (
     claim_payment_confirmation,
     complete_payment_confirmation,
     get_payment_by_token,
     mark_payment_confirmation_unknown,
+    mark_payment_confirmation_pending_retry,
 )
 
 router = APIRouter()
@@ -76,67 +77,98 @@ async def handle_transbank_return(
             },
         )
 
-    if payment.status != "PENDING":
+    if payment.status not in {"PENDING", "CONFIRMATION_PENDING_RETRY"}:
         return _confirmation_response(payment)
 
-    with bulkhead.acquire():
-        circuit_breaker.before_call()
-        payment, claimed = claim_payment_confirmation(token)
-        if payment is None:
-            raise HTTPException(
-                status_code=404,
-                detail={
-                    "error": "PAYMENT_NOT_FOUND",
-                    "message": "No se encontró la transacción asociada.",
-                },
-            )
-        if not claimed:
-            circuit_breaker.release_probe()
-            return _confirmation_response(payment)
+    payment, claimed = claim_payment_confirmation(token)
+    if payment is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "PAYMENT_NOT_FOUND",
+                "message": "No se encontró la transacción asociada.",
+            },
+        )
+    if not claimed:
+        return _confirmation_response(payment)
 
-        try:
-            confirmation = await invoke_provider_call(
-                get_provider().confirm_transaction,
-                token,
-            )
-            circuit_breaker.on_success()
-            if confirmation.get("status") == "AUTHORIZED" and confirmation.get(
-                "response_code"
-            ) == 0:
-                result_status = "CHARGED"
-            else:
-                result_status = "FAILED"
-            payment = complete_payment_confirmation(
-                payment.payment_id,
-                status=result_status,
-            )
-            if payment is None:
-                raise RuntimeError("No se pudo recuperar el pago confirmado.")
-            return _confirmation_response(
-                payment,
-                message=confirmation.get("message"),
-                response_code=confirmation.get("response_code"),
-            )
-        except ProviderUnavailable as exc:
-            circuit_breaker.on_failure()
-            mark_payment_confirmation_unknown(payment.payment_id)
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "error": "PAYMENT_PROVIDER_UNAVAILABLE",
-                    "message": "Transbank no está disponible temporalmente.",
-                },
-            ) from exc
-        except TimeoutError as exc:
-            circuit_breaker.on_failure()
-            mark_payment_confirmation_unknown(payment.payment_id)
-            raise HTTPException(
-                status_code=504,
-                detail={
-                    "error": "PAYMENT_PROVIDER_TIMEOUT",
-                    "message": "Tiempo de espera agotado al confirmar la transacción.",
-                },
-            ) from exc
+    try:
+        circuit_breaker.before_call()
+        confirmation = await invoke_provider_call(
+            get_provider().confirm_transaction,
+            token,
+        )
+        circuit_breaker.on_success()
+        if confirmation.get("status") == "AUTHORIZED" and confirmation.get(
+            "response_code"
+        ) == 0:
+            result_status = "CHARGED"
+        else:
+            result_status = "FAILED"
+        payment = complete_payment_confirmation(
+            payment.payment_id,
+            status=result_status,
+        )
+        if payment is None:
+            raise RuntimeError("No se pudo recuperar el pago confirmado.")
+        return _confirmation_response(
+            payment,
+            message=confirmation.get("message"),
+            response_code=confirmation.get("response_code"),
+        )
+    except CircuitOpenError as exc:
+        payment = mark_payment_confirmation_pending_retry(payment.payment_id)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "PAYMENT_PENDING_RETRY",
+                "status": "PAYMENT_PENDING_RETRY",
+                "payment_id": payment.payment_id,
+                "rental_id": payment.rental_id,
+                "message": "Pasarela temporalmente no disponible; pago pendiente de reintento.",
+            },
+        ) from exc
+    except HTTPException as exc:
+        circuit_breaker.release_probe()
+        if exc.status_code != 429:
+            raise
+        payment = mark_payment_confirmation_pending_retry(payment.payment_id)
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "PAYMENT_PENDING_RETRY",
+                "status": "PAYMENT_PENDING_RETRY",
+                "payment_id": payment.payment_id,
+                "rental_id": payment.rental_id,
+                "message": "Capacidad de pagos ocupada; el pago quedó pendiente de reintento.",
+            },
+        ) from exc
+    except ProviderUnavailable as exc:
+        circuit_breaker.on_failure()
+        mark_payment_confirmation_unknown(payment.payment_id)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "PAYMENT_PROVIDER_UNAVAILABLE",
+                "status": "UNKNOWN",
+                "payment_id": payment.payment_id,
+                "rental_id": payment.rental_id,
+                "message": "Transbank no está disponible temporalmente.",
+            },
+        ) from exc
+    except TimeoutError as exc:
+        circuit_breaker.on_failure()
+        mark_payment_confirmation_unknown(payment.payment_id)
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "error": "PAYMENT_PROVIDER_TIMEOUT",
+                "status": "UNKNOWN",
+                "payment_id": payment.payment_id,
+                "rental_id": payment.rental_id,
+                "message": "Tiempo de espera agotado al confirmar la transacción.",
+            },
+        ) from exc
 
 
 def _confirmation_response(
@@ -150,6 +182,7 @@ def _confirmation_response(
         "FAILED": "Pago rechazado.",
         "CONFIRMING": "La confirmación del pago sigue en curso.",
         "UNKNOWN": "El resultado de la confirmación no pudo determinarse.",
+        "CONFIRMATION_PENDING_RETRY": "La confirmación está pendiente de reintento.",
     }
     if payment.status == "CHARGED":
         response_code = 0 if response_code is None else response_code

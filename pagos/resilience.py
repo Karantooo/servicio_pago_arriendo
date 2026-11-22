@@ -1,7 +1,7 @@
 import asyncio
+from concurrent.futures import Future, ThreadPoolExecutor
 import threading
 import time
-from contextlib import contextmanager
 from typing import Literal
 
 from fastapi import HTTPException, status
@@ -22,75 +22,88 @@ class CircuitBreaker:
         self.state: Literal["CLOSED", "OPEN", "HALF_OPEN"] = "CLOSED"
         self.opened_at: float | None = None
         self.half_open_probe_in_flight = False
+        self._lock = threading.Lock()
 
     def before_call(self) -> None:
-        if self.state == "OPEN":
-            if self.opened_at is not None and (
-                time.monotonic() - self.opened_at
-            ) >= self.open_duration_seconds:
-                self.state = "HALF_OPEN"
+        with self._lock:
+            if self.state == "OPEN":
+                if self.opened_at is not None and (
+                    time.monotonic() - self.opened_at
+                ) >= self.open_duration_seconds:
+                    self.state = "HALF_OPEN"
+                else:
+                    raise CircuitOpenError(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail={
+                            "error": "PAYMENT_CIRCUIT_OPEN",
+                            "message": "Circuit Breaker abierto. Reintente en unos segundos.",
+                        },
+                    )
+            if self.state == "HALF_OPEN":
+                if self.half_open_probe_in_flight:
+                    raise CircuitOpenError(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail={
+                            "error": "PAYMENT_CIRCUIT_OPEN",
+                            "message": "Circuit Breaker en prueba. Ya hay una solicitud en vuelo.",
+                        },
+                    )
                 self.half_open_probe_in_flight = True
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail={
-                        "error": "PAYMENT_PROVIDER_UNAVAILABLE",
-                        "message": "Circuit Breaker abierto. Reintente en unos segundos.",
-                    },
-                )
-        elif self.state == "HALF_OPEN":
-            if self.half_open_probe_in_flight:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail={
-                        "error": "PAYMENT_PROVIDER_UNAVAILABLE",
-                        "message": "Circuit Breaker en prueba. Ya hay una solicitud en vuelo.",
-                    },
-                )
-            self.half_open_probe_in_flight = True
 
     def on_success(self) -> None:
-        self.failures = 0
-        self.state = "CLOSED"
-        self.opened_at = None
-        self.half_open_probe_in_flight = False
+        with self._lock:
+            self.failures = 0
+            self.state = "CLOSED"
+            self.opened_at = None
+            self.half_open_probe_in_flight = False
 
     def on_failure(self) -> None:
-        if self.state == "HALF_OPEN":
-            self.state = "OPEN"
-            self.opened_at = time.monotonic()
-            self.half_open_probe_in_flight = False
-            return
-        self.failures += 1
-        if self.failures >= self.threshold:
-            self.state = "OPEN"
-            self.opened_at = time.monotonic()
-            self.half_open_probe_in_flight = False
+        with self._lock:
+            if self.state == "HALF_OPEN":
+                self.state = "OPEN"
+                self.opened_at = time.monotonic()
+                self.half_open_probe_in_flight = False
+                return
+            self.failures += 1
+            if self.failures >= self.threshold:
+                self.state = "OPEN"
+                self.opened_at = time.monotonic()
+                self.half_open_probe_in_flight = False
 
     def release_probe(self) -> None:
-        if self.state == "HALF_OPEN":
-            self.half_open_probe_in_flight = False
+        with self._lock:
+            if self.state == "HALF_OPEN":
+                self.half_open_probe_in_flight = False
+
+
+class CircuitOpenError(HTTPException):
+    pass
 
 
 class Bulkhead:
     def __init__(self, capacity: int) -> None:
+        if capacity < 1:
+            raise ValueError("La capacidad del Bulkhead debe ser positiva.")
         self.capacity = capacity
-        self._semaphore = threading.Semaphore(capacity)
+        self._slots = threading.BoundedSemaphore(capacity)
+        self._executor = ThreadPoolExecutor(
+            max_workers=capacity,
+            thread_name_prefix="payment-provider",
+        )
 
-    @contextmanager
-    def acquire(self):
-        if not self._semaphore.acquire(blocking=False):
+    def submit(self, func, *args, **kwargs) -> Future:
+        if not self._slots.acquire(blocking=False):
             raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "error": "PAYMENT_BULKHEAD_EXCEEDED",
-                    "message": "Bulkhead saturado. Intente nuevamente más tarde.",
-                },
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Bulkhead capacity exceeded",
             )
         try:
-            yield
-        finally:
-            self._semaphore.release()
+            future = self._executor.submit(func, *args, **kwargs)
+        except Exception:
+            self._slots.release()
+            raise
+        future.add_done_callback(lambda _: self._slots.release())
+        return future
 
 
 circuit_breaker = CircuitBreaker(
@@ -101,9 +114,10 @@ bulkhead = Bulkhead(BULKHEAD_CAPACITY)
 
 
 async def invoke_provider_call(func, *args, **kwargs):
+    future = bulkhead.submit(func, *args, **kwargs)
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(func, *args, **kwargs),
+            asyncio.wrap_future(future),
             timeout=TIMEOUT_SECONDS,
         )
     except TimeoutError as exc:

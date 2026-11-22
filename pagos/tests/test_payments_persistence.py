@@ -91,6 +91,24 @@ def test_provider_failure_is_persisted_as_unknown_without_recharging(client):
         assert db.query(Payment).count() == 1
 
 
+def test_open_provider_circuit_persists_retryable_payment(client):
+    get_provider().set_mode("DOWN")
+    for attempt in range(3):
+        failed = create_charge(client, key=f"charge-down-{attempt}")
+        assert failed.status_code == 503
+
+    degraded = create_charge(client, key="charge-circuit-open")
+    assert degraded.status_code == 503
+    detail = degraded.json()["detail"]
+    assert detail["status"] == "PAYMENT_PENDING_RETRY"
+    assert detail["payment_id"]
+    assert detail["rental_id"] == 1001
+
+    status_response = client.get(f"/payments/{detail['payment_id']}")
+    assert status_response.status_code == 200
+    assert status_response.json()["status"] == "PAYMENT_PENDING_RETRY"
+
+
 def test_mock_provider_mode_requires_admin_key(client):
     unauthorized = client.post(
         "/payments/mock-provider/mode",

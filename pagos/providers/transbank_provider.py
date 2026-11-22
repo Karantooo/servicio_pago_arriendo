@@ -1,6 +1,6 @@
 from typing import Any, Dict
 
-from pagos.config import TRANSBANK_RETURN_URL
+from pagos.config import EXTERNAL_TIMEOUT_SECONDS, TRANSBANK_RETURN_URL
 from pagos.providers.base import ProviderUnavailable
 
 
@@ -22,6 +22,7 @@ class TransbankProvider:
             IntegrationCommerceCodes.WEBPAY_PLUS,
             IntegrationApiKeys.WEBPAY,
             IntegrationType.TEST,
+            timeout=EXTERNAL_TIMEOUT_SECONDS,
         )
         self._transaction = Transaction(options=options)
 

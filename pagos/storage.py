@@ -33,7 +33,7 @@ def claim_payment_confirmation(token: str) -> tuple[Payment | None, bool]:
             update(Payment)
             .where(
                 Payment.token == token,
-                Payment.status == "PENDING",
+                Payment.status.in_(("PENDING", "CONFIRMATION_PENDING_RETRY")),
             )
             .values(status="CONFIRMING")
         )
@@ -71,6 +71,20 @@ def mark_payment_confirmation_unknown(payment_id: int) -> None:
             .values(status="UNKNOWN")
         )
         db.commit()
+
+
+def mark_payment_confirmation_pending_retry(payment_id: int) -> Payment | None:
+    with SessionLocal() as db:
+        db.execute(
+            update(Payment)
+            .where(
+                Payment.payment_id == payment_id,
+                Payment.status == "CONFIRMING",
+            )
+            .values(status="CONFIRMATION_PENDING_RETRY")
+        )
+        db.commit()
+        return db.get(Payment, payment_id)
 
 
 def create_payment(

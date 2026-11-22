@@ -31,7 +31,7 @@ class MockProvider:
         if mode == "DOWN":
             raise ProviderUnavailable("Mock provider está caído")
         if mode == "SLOW":
-            time.sleep(max(0, TIMEOUT_SECONDS + 1))
+            time.sleep(TIMEOUT_SECONDS + 1)
 
     def create_transaction(
         self,
