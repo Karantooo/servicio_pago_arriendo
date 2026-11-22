@@ -240,6 +240,38 @@
       }
     },
     {
+      "endpoint": "/api/admin/failure-injection",
+      "method": "POST",
+      "input_headers": ["API-Key", "Content-Type"],
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": ["http://entregas-api:8081"],
+          "url_pattern": "/admin/failure-injection",
+          "encoding": "no-op"
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["admin"],
+          "roles_key": "roles"
+        },
+        "qos/ratelimit/router": {
+          "max_rate": 30,
+          "every": "1s",
+          "capacity": 30,
+          "client_max_rate": 5,
+          "client_capacity": 5,
+          "strategy": "ip"
+        }
+      }
+    },
+    {
       "endpoint": "/api/rental-summary/{rentalId}",
       "method": "GET",
       "input_headers": ["API-Key"],
@@ -415,6 +447,38 @@
           "capacity": 100,
           "client_max_rate": 10,
           "client_capacity": 10,
+          "strategy": "ip"
+        }
+      }
+    },
+    {
+      "endpoint": "/api/admin/payments/mock-provider/mode",
+      "method": "POST",
+      "input_headers": ["X-Admin-Key", "Content-Type"],
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": ["http://payments-api:8003"],
+          "url_pattern": "/payments/mock-provider/mode",
+          "encoding": "no-op"
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["admin"],
+          "roles_key": "roles"
+        },
+        "qos/ratelimit/router": {
+          "max_rate": 30,
+          "every": "1s",
+          "capacity": 30,
+          "client_max_rate": 5,
+          "client_capacity": 5,
           "strategy": "ip"
         }
       }
