@@ -87,6 +87,8 @@ Entregas consulta arriendos y Sagas con la API Key de administrador. Al registra
 
 Los arriendos v2 nuevos reservan el equipo para el intervalo `[startDate, endDate)`. Equipos serializa las nuevas reservas por equipo y compara su ocupación simultánea con la capacidad disponible. Dos arriendos pueden compartir la misma unidad si sus períodos no se solapan. Las reservas antiguas sin fechas y las de v1 siguen consumiendo una unidad global, y se descuentan de la capacidad para todos los intervalos. Las consultas de catálogo de Equipos siguen mostrando el contador global.
 
+Para cancelar un arriendo v2 con entrega agendada, `POST /v2/rentals/{rentalId}/cancel` cancela la entrega, reembolsa el cobro y libera el equipo, en ese orden. Si un paso no se confirma, el arriendo queda `CANCELLING`; repetir el mismo endpoint retoma el paso pendiente. Una vez entregado el equipo, se usa la devolución.
+
 ## Servicio de Pagos y resiliencia
 
 El repositorio incluye el microservicio `pagos` con un contrato `pagos/open-api-pagos_transbank.yaml`

@@ -403,8 +403,21 @@ def notify_delivery_status(
                     },
                 )
         elif rental.status in {"PENDING", "ACTIVE"}:
-            finish_rental(db, rentalId, "CANCELLED")
-            rental = db.get(Rental, rentalId)
+            rental = finish_rental(
+                db, rentalId, "CANCELLED", cancelled_delivery_id=notification.deliveryId
+            )
+        elif rental.status == "CANCELLING":
+            cancellation = (
+                db.query(Saga)
+                .filter(Saga.rental_id == rentalId, Saga.operation == "CANCEL")
+                .order_by(Saga.created_at.desc(), Saga.id.desc())
+                .first()
+            )
+            if cancellation is None or cancellation.delivery_id != notification.deliveryId:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"code": "DELIVERY_DATA_MISMATCH", "message": "La entrega no coincide con la cancelación en curso."},
+                )
         elif rental.status != "CANCELLED":
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,

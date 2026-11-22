@@ -135,6 +135,26 @@ def agendar_entrega(
     )
 
 
+def cancelar_entrega(delivery_id: int) -> None:
+    try:
+        response = httpx.post(
+            f"{DELIVERIES_API_URL}/v1/deliveries/{delivery_id}/cancel",
+            headers={"API-Key": DELIVERIES_API_KEY},
+            json={"reason": "Cancelación del arriendo"},
+            timeout=DELIVERIES_TIMEOUT_SECONDS,
+        )
+        if response.status_code == 200:
+            data = response.json()
+            if data["id"] == delivery_id and data["status"] == "CANCELLED":
+                return
+    except (httpx.RequestError, ValueError, KeyError, TypeError):
+        pass
+
+    # La entrega pudo cancelarse aunque se perdiera la respuesta o su callback.
+    if consultar_entrega(delivery_id).status != "CANCELLED":
+        raise DeliverySchedulingUncertain("Entregas no confirmó la cancelación.")
+
+
 def consultar_entrega(delivery_id: int) -> ScheduledDelivery:
     try:
         response = httpx.get(

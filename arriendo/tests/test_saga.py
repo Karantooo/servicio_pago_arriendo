@@ -833,3 +833,58 @@ def test_v2_finish_records_saga_and_releases_unit(
     assert rental.status == expected_status
     assert saga.operation == expected_saga_operation
     assert saga.status == "COMPLETED"
+
+
+def test_cancel_scheduled_delivery_resumes_before_refund(client, db_session, monkeypatch):
+    from app import saga_orchestrator
+    from app.delivery_client import DeliverySchedulingUncertain
+    from app.payments_client import RefundState
+
+    rental = Rental(
+        client_id=_create_client(client),
+        equipment_id=50,
+        start_date=datetime(2099, 9, 20, tzinfo=timezone.utc),
+        end_date=datetime(2099, 9, 25, tzinfo=timezone.utc),
+        equipment_reservation_id=str(uuid4()),
+        status="PENDING",
+    )
+    db_session.add(rental)
+    db_session.flush()
+    rental_id = rental.id
+    db_session.add(Saga(
+        id=str(uuid4()), rental_id=rental_id, operation="CREATE", status="IN_PROGRESS",
+        current_step="DELIVERY_SCHEDULED", delivery_id=701, payment_id=501,
+    ))
+    db_session.commit()
+    calls = []
+
+    def cancel(delivery_id):
+        calls.append(("cancel", delivery_id))
+        if len(calls) == 1:
+            raise DeliverySchedulingUncertain("Se perdió la respuesta.")
+        callback = client.put(
+            f"/v2/rentals/{rental_id}/delivery-status",
+            json={"deliveryId": delivery_id, "status": "CANCELLED",
+                  "occurredAt": datetime.now(timezone.utc).isoformat()},
+        )
+        assert callback.status_code == 200
+
+    def refund(**payment):
+        calls.append(("refund", payment["payment_id"]))
+        return RefundState(refund_id=801, status="REFUNDED")
+
+    def release(equipment_id, reservation_id):
+        calls.append(("release", equipment_id))
+
+    monkeypatch.setattr(saga_orchestrator, "cancelar_entrega", cancel)
+    monkeypatch.setattr(saga_orchestrator, "reembolsar_pago", refund)
+    monkeypatch.setattr(saga_orchestrator.grpc_client, "liberar_unidad", release)
+    url = f"/v2/rentals/{rental_id}/cancel"
+    assert client.post(url).status_code == 503
+    assert calls == [("cancel", 701)]
+
+    result = client.post(url)
+    assert result.status_code == 200
+    assert result.json()["status"] == "CANCELLED"
+    assert client.post(url).status_code == 200
+    assert calls == [("cancel", 701), ("cancel", 701), ("refund", 501), ("release", 50)]

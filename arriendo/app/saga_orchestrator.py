@@ -24,6 +24,7 @@ from app.delivery_client import (
     DeliverySchedulingRejected,
     DeliverySchedulingUncertain,
     agendar_entrega,
+    cancelar_entrega,
     scheduled_at_for_rental,
 )
 
@@ -766,7 +767,59 @@ def _compensate_failed_payment(
     db.commit()
 
 
-def finish_rental(db: Session, rental_id: int, final_status: str) -> Rental:
+def _cancel_scheduled_rental(db: Session, rental: Rental, saga_id: str) -> Rental:
+    # El callback lee esta Saga sin bloquearla. Las solicitudes de cancelación
+    # concurrentes sí toman el bloqueo para ejecutar un paso a la vez.
+    while True:
+        saga = (
+            db.query(Saga).filter(Saga.id == saga_id)
+            .populate_existing().with_for_update().one()
+        )
+        step = saga.current_step
+        try:
+            if step == "CANCEL_DELIVERY":
+                cancelar_entrega(saga.delivery_id)
+                saga.current_step = "REFUND_PAYMENT"
+            elif step == "REFUND_PAYMENT":
+                refund = reembolsar_pago(
+                    payment_id=saga.payment_id,
+                    rental_id=rental.id,
+                    idempotency_key=saga.id,
+                )
+                saga.refund_id = refund.refund_id
+                saga.refund_status = refund.status
+                if refund.status != "REFUNDED":
+                    raise RefundUncertain("El reembolso todavía requiere confirmación.")
+                saga.current_step = "RELEASE_EQUIPMENT"
+            elif step == "RELEASE_EQUIPMENT":
+                _release_rental_equipment(rental)
+                rental.status = "CANCELLED"
+                saga.equipment_release_status = "COMPLETED"
+                saga.status = "COMPLETED"
+                saga.current_step = "DONE"
+            else:
+                db.commit()
+                return rental
+        except (DeliverySchedulingUncertain, RefundRejected, RefundUncertain, HTTPException) as error:
+            saga.status = "IN_DOUBT"
+            saga.error = _http_error_message(error) if isinstance(error, HTTPException) else str(error)
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"code": "CANCELLATION_IN_DOUBT", "message": saga.error},
+            ) from error
+
+        saga.error = None
+        if saga.current_step != "DONE":
+            saga.status = "IN_PROGRESS"
+        _record_saga_event(db, saga.id, step, "COMPLETED")
+        if step == "RELEASE_EQUIPMENT":
+            return rental
+
+
+def finish_rental(
+    db: Session, rental_id: int, final_status: str, *, cancelled_delivery_id: int | None = None
+) -> Rental:
     intermediate_status = (
         "CANCELLING" if final_status == "CANCELLED" else "RETURNING"
     )
@@ -775,6 +828,46 @@ def finish_rental(db: Session, rental_id: int, final_status: str) -> Rental:
     if rental_before_update is None:
         _raise_missing_or_inactive_rental(db, rental_id)
     previous_status = rental_before_update.status
+    creation_saga = None
+    if final_status == "CANCELLED":
+        if previous_status == "CANCELLED":
+            return rental_before_update
+        if previous_status == "CANCELLING":
+            cancellation = (
+                db.query(Saga)
+                .filter(Saga.rental_id == rental_id, Saga.operation == "CANCEL")
+                .order_by(Saga.created_at.desc(), Saga.id.desc())
+                .first()
+            )
+            if cancellation is not None and cancellation.delivery_id is not None:
+                return _cancel_scheduled_rental(db, rental_before_update, cancellation.id)
+        creation_saga = (
+            db.query(Saga)
+            .filter(Saga.rental_id == rental_id, Saga.operation == "CREATE")
+            .first()
+        )
+        if creation_saga is not None:
+            if cancelled_delivery_id is not None and creation_saga.delivery_id not in {None, cancelled_delivery_id}:
+                raise HTTPException(409, detail={"code": "DELIVERY_DATA_MISMATCH", "message": "La entrega no coincide con el arriendo."})
+            if previous_status == "ACTIVE" and creation_saga.delivery_id is not None:
+                raise HTTPException(409, detail={"code": "INVALID_STATE_TRANSITION", "message": "El equipo ya fue entregado. Use la devolución."})
+            if (
+                cancelled_delivery_id is None
+                and creation_saga.delivery_id is None
+                and creation_saga.current_step in DELIVERY_RETRY_STEPS
+            ):
+                raise HTTPException(409, detail={"code": "DELIVERY_SCHEDULING_UNCERTAIN", "message": "Concilie el agendamiento antes de cancelar."})
+
+    known_delivery_id = creation_saga.delivery_id if creation_saga is not None else None
+    delivery_id = known_delivery_id or cancelled_delivery_id
+    scheduled_delivery = (
+        creation_saga is not None
+        and delivery_id is not None
+        and previous_status == "PENDING"
+        and (known_delivery_id is not None or creation_saga.payment_id is not None)
+    )
+    if scheduled_delivery and creation_saga.payment_id is None:
+        raise HTTPException(409, detail={"code": "PAYMENT_NOT_STARTED", "message": "La entrega agendada no tiene un pago asociado."})
     allowed_statuses = (
         {"ACTIVE", "PENDING"} if final_status == "CANCELLED" else {"ACTIVE"}
     )
@@ -799,8 +892,14 @@ def finish_rental(db: Session, rental_id: int, final_status: str) -> Rental:
         status="STARTED",
         current_step="RELEASE_EQUIPMENT",
     )
+    if scheduled_delivery:
+        saga.delivery_id = delivery_id
+        saga.payment_id = creation_saga.payment_id
+        saga.current_step = "REFUND_PAYMENT" if cancelled_delivery_id else "CANCEL_DELIVERY"
     db.add(saga)
     db.commit()
+    if scheduled_delivery:
+        return _cancel_scheduled_rental(db, rental, saga.id)
     db.refresh(rental)
 
     equipment_id = rental.equipment_id
