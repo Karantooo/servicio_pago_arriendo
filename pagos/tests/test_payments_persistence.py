@@ -108,6 +108,22 @@ def test_open_provider_circuit_persists_retryable_payment(client):
     assert status_response.status_code == 200
     assert status_response.json()["status"] == "PAYMENT_PENDING_RETRY"
 
+    metrics = client.get("/metrics")
+    assert metrics.status_code == 200
+    exposition = metrics.text
+    assert 'circuit_breaker_state{service="payments-api",state="OPEN"} 1.0' in exposition
+    assert 'http_request_duration_seconds_count{endpoint="POST /payments/charge",service="payments-api",status_code="503"}' in exposition
+
+
+def test_request_id_is_echoed_and_latency_is_exported(client):
+    response = client.get("/health", headers={"X-Request-ID": "load-test-42"})
+
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"] == "load-test-42"
+    metrics = client.get("/metrics")
+    assert metrics.status_code == 200
+    assert 'http_request_duration_seconds_count{endpoint="GET /health",service="payments-api",status_code="200"}' in metrics.text
+
 
 def test_mock_provider_mode_requires_admin_key(client):
     unauthorized = client.post(

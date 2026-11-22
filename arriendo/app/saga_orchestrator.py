@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime
+from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
@@ -1049,6 +1050,18 @@ def _compensate_create(
     rental_id: int,
     persistence_error: SQLAlchemyError,
 ) -> str:
+    started = perf_counter()
+    logger.warning(
+        "Saga equipment compensation started",
+        extra={
+            "event": "saga_compensation_started",
+            "details": {
+                "saga_id": saga_id,
+                "rental_id": rental_id,
+                "step": "RELEASE_EQUIPMENT",
+            },
+        },
+    )
     _mark_compensating(db, saga_id, persistence_error)
     try:
         _release_rental_equipment(db.get(Rental, rental_id))
@@ -1060,6 +1073,18 @@ def _compensate_create(
             persistence_error,
             compensation_error,
             rental_status="FAILED",
+        )
+        logger.error(
+            "Saga equipment compensation failed",
+            extra={
+                "event": "saga_compensation_failed",
+                "duration_ms": round((perf_counter() - started) * 1000, 3),
+                "details": {
+                    "saga_id": saga_id,
+                    "rental_id": rental_id,
+                    "error": str(compensation_error),
+                },
+            },
         )
         return "COMPENSATION_FAILED"
 
@@ -1075,8 +1100,23 @@ def _compensate_create(
         db.commit()
     except SQLAlchemyError:
         db.rollback()
-        logger.exception("No se pudo persistir la compensación de la Saga %s.", saga_id)
+        logger.exception(
+            "No se pudo persistir la compensación de la Saga %s.", saga_id,
+            extra={
+                "event": "saga_compensation_persistence_failed",
+                "duration_ms": round((perf_counter() - started) * 1000, 3),
+                "details": {"saga_id": saga_id, "rental_id": rental_id},
+            },
+        )
         return "COMPENSATION_FAILED"
+    logger.info(
+        "Saga equipment compensation completed",
+        extra={
+            "event": "saga_compensation_completed",
+            "duration_ms": round((perf_counter() - started) * 1000, 3),
+            "details": {"saga_id": saga_id, "rental_id": rental_id},
+        },
+    )
     return "COMPENSATED"
 
 
@@ -1088,6 +1128,18 @@ def _compensate_finish(
     previous_status: str,
     persistence_error: SQLAlchemyError,
 ) -> str:
+    started = perf_counter()
+    logger.warning(
+        "Saga equipment restoration started",
+        extra={
+            "event": "saga_compensation_started",
+            "details": {
+                "saga_id": saga_id,
+                "rental_id": rental_id,
+                "step": "RESTORE_EQUIPMENT",
+            },
+        },
+    )
     _mark_compensating(db, saga_id, persistence_error)
     rental = db.get(Rental, rental_id)
     try:
@@ -1107,6 +1159,18 @@ def _compensate_finish(
             compensation_error,
             rental_status=previous_status,
         )
+        logger.error(
+            "Saga equipment restoration failed",
+            extra={
+                "event": "saga_compensation_failed",
+                "duration_ms": round((perf_counter() - started) * 1000, 3),
+                "details": {
+                    "saga_id": saga_id,
+                    "rental_id": rental_id,
+                    "error": str(compensation_error),
+                },
+            },
+        )
         return "COMPENSATION_FAILED"
 
     saga = db.get(Saga, saga_id)
@@ -1121,8 +1185,23 @@ def _compensate_finish(
         db.commit()
     except SQLAlchemyError:
         db.rollback()
-        logger.exception("No se pudo persistir la compensación de la Saga %s.", saga_id)
+        logger.exception(
+            "No se pudo persistir la compensación de la Saga %s.", saga_id,
+            extra={
+                "event": "saga_compensation_persistence_failed",
+                "duration_ms": round((perf_counter() - started) * 1000, 3),
+                "details": {"saga_id": saga_id, "rental_id": rental_id},
+            },
+        )
         return "COMPENSATION_FAILED"
+    logger.info(
+        "Saga equipment restoration completed",
+        extra={
+            "event": "saga_compensation_completed",
+            "duration_ms": round((perf_counter() - started) * 1000, 3),
+            "details": {"saga_id": saga_id, "rental_id": rental_id},
+        },
+    )
     return "COMPENSATED"
 
 
@@ -1142,7 +1221,13 @@ def _mark_compensating(
         db.commit()
     except SQLAlchemyError:
         db.rollback()
-        logger.exception("No se pudo registrar el inicio de compensación de la Saga %s.", saga_id)
+        logger.exception(
+            "No se pudo registrar el inicio de compensación de la Saga %s.", saga_id,
+            extra={
+                "event": "saga_compensation_start_persistence_failed",
+                "details": {"saga_id": saga_id},
+            },
+        )
 
 
 def _record_compensation_failure(

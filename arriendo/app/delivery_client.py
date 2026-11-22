@@ -1,9 +1,14 @@
+import logging
 import os
+from time import perf_counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import httpx
 
+from app.observability import request_id_context
+
+logger = logging.getLogger(__name__)
 
 DELIVERIES_API_URL = os.getenv(
     "DELIVERIES_API_URL", "http://entregas-api:8081"
@@ -19,6 +24,14 @@ if DELIVERIES_TIMEOUT_SECONDS <= 0:
     raise ValueError(
         "DELIVERIES_TIMEOUT_SECONDS debe ser mayor que cero"
     )
+
+
+def _request_headers(headers: dict[str, str]) -> dict[str, str]:
+    result = dict(headers)
+    request_id = request_id_context.get()
+    if request_id:
+        result["X-Request-ID"] = request_id
+    return result
 
 
 class DeliverySchedulingRejected(Exception):
@@ -76,12 +89,15 @@ def agendar_entrega(
     scheduled_at = scheduled_at.astimezone(timezone.utc)
 
     try:
+        started = perf_counter()
         response = httpx.post(
             f"{DELIVERIES_API_URL}/v1/deliveries",
-            headers={
-                "Idempotency-Key": idempotency_key,
-                "API-Key": DELIVERIES_API_KEY,
-            },
+            headers=_request_headers(
+                {
+                    "Idempotency-Key": idempotency_key,
+                    "API-Key": DELIVERIES_API_KEY,
+                }
+            ),
             json={
                 "rentalId": rental_id,
                 "clientId": client_id,
@@ -93,6 +109,17 @@ def agendar_entrega(
             timeout=DELIVERIES_TIMEOUT_SECONDS,
         )
     except httpx.RequestError as error:
+        logger.warning(
+            "Delivery service request failed",
+            extra={
+                "event": "delivery_service_request_failed",
+                "duration_ms": round((perf_counter() - started) * 1000, 3),
+                "details": {
+                    "rental_id": rental_id,
+                    "error": str(error),
+                },
+            },
+        )
         raise DeliverySchedulingUncertain(
             "No se recibió una respuesta de Entregas."
         ) from error
@@ -137,9 +164,10 @@ def agendar_entrega(
 
 def cancelar_entrega(delivery_id: int) -> None:
     try:
+        started = perf_counter()
         response = httpx.post(
             f"{DELIVERIES_API_URL}/v1/deliveries/{delivery_id}/cancel",
-            headers={"API-Key": DELIVERIES_API_KEY},
+            headers=_request_headers({"API-Key": DELIVERIES_API_KEY}),
             json={"reason": "Cancelación del arriendo"},
             timeout=DELIVERIES_TIMEOUT_SECONDS,
         )
@@ -147,8 +175,18 @@ def cancelar_entrega(delivery_id: int) -> None:
             data = response.json()
             if data["id"] == delivery_id and data["status"] == "CANCELLED":
                 return
-    except (httpx.RequestError, ValueError, KeyError, TypeError):
-        pass
+    except (httpx.RequestError, ValueError, KeyError, TypeError) as error:
+        logger.warning(
+            "Delivery cancellation response could not be confirmed",
+            extra={
+                "event": "delivery_cancel_response_uncertain",
+                "duration_ms": round((perf_counter() - started) * 1000, 3),
+                "details": {
+                    "delivery_id": delivery_id,
+                    "error": str(error),
+                },
+            },
+        )
 
     # La entrega pudo cancelarse aunque se perdiera la respuesta o su callback.
     if consultar_entrega(delivery_id).status != "CANCELLED":
@@ -157,12 +195,21 @@ def cancelar_entrega(delivery_id: int) -> None:
 
 def consultar_entrega(delivery_id: int) -> ScheduledDelivery:
     try:
+        started = perf_counter()
         response = httpx.get(
             f"{DELIVERIES_API_URL}/v1/deliveries/{delivery_id}",
-            headers={"API-Key": DELIVERIES_API_KEY},
+            headers=_request_headers({"API-Key": DELIVERIES_API_KEY}),
             timeout=DELIVERIES_TIMEOUT_SECONDS,
         )
     except httpx.RequestError as error:
+        logger.warning(
+            "Delivery status request failed",
+            extra={
+                "event": "delivery_status_request_failed",
+                "duration_ms": round((perf_counter() - started) * 1000, 3),
+                "details": {"delivery_id": delivery_id, "error": str(error)},
+            },
+        )
         raise DeliverySchedulingUncertain(
             "No se recibió una respuesta de Entregas."
         ) from error

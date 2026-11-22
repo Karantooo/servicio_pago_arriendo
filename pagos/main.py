@@ -2,6 +2,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from pagos.observability import configure_json_logging, install_observability
+
+configure_json_logging()
+
 from pagos.database import initialize_database
 from pagos.routes.health import router as health_router
 from pagos.routes.mock_provider import router as mock_provider_router
@@ -27,6 +31,7 @@ app = FastAPI(
     ],
     lifespan=lifespan,
 )
+install_observability(app)
 
 app.include_router(health_router)
 app.include_router(mock_provider_router)

@@ -2,6 +2,7 @@ import logging
 import os
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from pagos.observability import request_id_context
 
 logger = logging.getLogger(__name__)
 
@@ -12,9 +13,13 @@ def notify_payment_result(rental_id: int) -> None:
     if not base_url or not api_key:
         return
 
+    headers = {"API-Key": api_key}
+    request_id = request_id_context.get()
+    if request_id:
+        headers["X-Request-ID"] = request_id
     request = Request(
         f"{base_url.rstrip('/')}/v2/rentals/{rental_id}/reconcile-payment",
-        headers={"API-Key": api_key},
+        headers=headers,
         method="POST",
         data=b"",
     )
@@ -22,4 +27,10 @@ def notify_payment_result(rental_id: int) -> None:
         with urlopen(request, timeout=5):
             pass
     except (HTTPError, URLError, TimeoutError) as error:
-        logger.warning("La conciliación del arriendo %s quedó pendiente: %s", rental_id, error)
+        logger.warning(
+            "Rental payment reconciliation remains pending",
+            extra={
+                "event": "rental_payment_reconciliation_pending",
+                "details": {"rental_id": rental_id, "error": str(error)},
+            },
+        )

@@ -8,6 +8,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.observability import configure_json_logging, install_observability
+
+configure_json_logging()
+
 from app.routers.v1 import rentals, clients
 from app.routers.v2 import rentals as rentals_v2
 from app.routers.v2 import tariffs as tariffs_v2
@@ -32,6 +36,7 @@ app = FastAPI(
         }
     ],
 )
+install_observability(app)
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import yaml
 from openapi_spec_validator import validate
+from fastapi.testclient import TestClient
 
 from app.main import app
 
@@ -51,7 +52,13 @@ def _implemented_routes(prefix=None):
         (route.path, method.lower())
         for route in _iter_http_routes(app.routes)
         if getattr(route, "path", None) is not None
-        and route.path not in {"/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"}
+        and route.path not in {
+            "/docs",
+            "/docs/oauth2-redirect",
+            "/redoc",
+            "/openapi.json",
+            "/metrics",
+        }
         and (prefix is None or route.path.startswith(prefix))
         for method in (getattr(route, "methods", set()) or set())
         if method.lower() in HTTP_METHODS
@@ -105,3 +112,16 @@ def test_v2_endpoints_document_error_responses():
     for (path, method), expected in expected_responses.items():
         documented = set(operations[path][method]["responses"])
         assert expected <= documented, f"Faltan respuestas documentadas en {method.upper()} {path}"
+
+
+def test_metrics_endpoint_exports_request_latency_and_circuit_state():
+    with TestClient(app) as client:
+        response = client.get("/health", headers={"X-Request-ID": "arriendo-load-17"})
+        metrics = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"] == "arriendo-load-17"
+    assert metrics.status_code == 200
+    assert 'http_request_duration_seconds_count{endpoint="GET /health",service="arriendos-api",status_code="200"}' in metrics.text
+    assert 'circuit_breaker_state{service="arriendos-api",state="CLOSED"} 1.0' in metrics.text
+    assert 'bulkhead_rejections_total{service="arriendos-api"} 0.0' in metrics.text

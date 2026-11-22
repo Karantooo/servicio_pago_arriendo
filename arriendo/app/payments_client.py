@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 import time
@@ -8,6 +9,12 @@ import httpx
 from pydantic import ValidationError
 
 from app.models import PaymentCheckout
+from app.observability import (
+    request_id_context,
+    set_circuit_breaker_state,
+)
+
+logger = logging.getLogger(__name__)
 
 
 PAYMENTS_API_URL = os.getenv(
@@ -57,7 +64,9 @@ class PaymentServiceCircuitBreaker:
                     or time.monotonic() - self.opened_at < self.open_seconds
                 ):
                     raise PaymentCircuitOpen("El circuito de Pagos está abierto.")
+                previous_state = self.state
                 self.state = "HALF_OPEN"
+                self._record_state_change(previous_state, self.state)
             if self.state == "HALF_OPEN":
                 if self.probe_in_flight:
                     raise PaymentCircuitOpen(
@@ -67,23 +76,45 @@ class PaymentServiceCircuitBreaker:
 
     def on_success(self) -> None:
         with self._lock:
+            previous_state = self.state
             self.failures = 0
             self.state = "CLOSED"
             self.opened_at = None
             self.probe_in_flight = False
+            self._record_state_change(previous_state, self.state)
 
     def on_failure(self) -> None:
         with self._lock:
+            previous_state = self.state
             if self.state == "HALF_OPEN":
                 self.state = "OPEN"
                 self.opened_at = time.monotonic()
                 self.probe_in_flight = False
+                self._record_state_change(previous_state, self.state)
                 return
             self.failures += 1
             if self.failures >= self.threshold:
                 self.state = "OPEN"
                 self.opened_at = time.monotonic()
                 self.probe_in_flight = False
+            self._record_state_change(previous_state, self.state)
+
+    @staticmethod
+    def _record_state_change(previous: str, current: str) -> None:
+        if previous == current:
+            return
+        set_circuit_breaker_state(current)
+        logger.warning(
+            "Payments API circuit breaker state changed",
+            extra={
+                "event": "circuit_breaker_state_changed",
+                "details": {
+                    "dependency": "payments-api",
+                    "previous_state": previous,
+                    "state": current,
+                },
+            },
+        )
 
     def release_probe(self) -> None:
         with self._lock:
@@ -95,6 +126,15 @@ payments_circuit_breaker = PaymentServiceCircuitBreaker(
     PAYMENTS_CIRCUIT_FAILURE_THRESHOLD,
     PAYMENTS_CIRCUIT_OPEN_SECONDS,
 )
+set_circuit_breaker_state(payments_circuit_breaker.state)
+
+
+def _request_headers(headers: dict[str, str] | None = None) -> dict[str, str]:
+    request_headers = dict(headers or {})
+    request_id = request_id_context.get()
+    if request_id:
+        request_headers["X-Request-ID"] = request_id
+    return request_headers
 
 
 def _request_with_breaker(
@@ -107,15 +147,56 @@ def _request_with_breaker(
         raise make_uncertain(
             "Pagos temporalmente no disponible; pago pendiente de reintento."
         ) from error
+    started = time.perf_counter()
     try:
         response = request()
+    except httpx.TimeoutException as error:
+        duration_ms = round((time.perf_counter() - started) * 1000, 3)
+        payments_circuit_breaker.on_failure()
+        logger.warning(
+            "Payments API request timed out",
+            extra={
+                "event": "payments_api_request_timeout",
+                "duration_ms": duration_ms,
+                "details": {
+                    "timeout_seconds": PAYMENTS_TIMEOUT_SECONDS,
+                    "error": str(error),
+                    "request_id": request_id_context.get(),
+                },
+            },
+        )
+        raise make_uncertain(
+            "Tiempo de espera agotado al comunicar con Pagos."
+        ) from error
     except httpx.RequestError as error:
         payments_circuit_breaker.on_failure()
+        logger.warning(
+            "Payments API request failed",
+            extra={
+                "event": "payments_api_request_failed",
+                "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+                "details": {
+                    "error": str(error),
+                    "request_id": request_id_context.get(),
+                },
+            },
+        )
         raise make_uncertain(
             "No se recibió una respuesta de Pagos."
         ) from error
     if response.status_code >= 500 or response.status_code == 429:
         payments_circuit_breaker.on_failure()
+        logger.warning(
+            "Payments API returned a retryable failure",
+            extra={
+                "event": "payments_api_retryable_response",
+                "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+                "details": {
+                    "status_code": response.status_code,
+                    "request_id": request_id_context.get(),
+                },
+            },
+        )
     else:
         payments_circuit_breaker.on_success()
     return response
@@ -193,7 +274,7 @@ def reembolsar_pago(
     response = _request_with_breaker(
         lambda: httpx.post(
             f"{PAYMENTS_API_URL}/payments/{payment_id}/refund",
-            headers={"Idempotency-Key": idempotency_key},
+            headers=_request_headers({"Idempotency-Key": idempotency_key}),
             json={
                 "reason": "SAGA_COMPENSATION",
                 "rental_id": rental_id,
@@ -251,6 +332,7 @@ def consultar_pago(payment_id: int) -> PaymentState:
     response = _request_with_breaker(
         lambda: httpx.get(
             f"{PAYMENTS_API_URL}/payments/{payment_id}",
+            headers=_request_headers(),
             timeout=PAYMENTS_TIMEOUT_SECONDS,
         ),
         PaymentLookupUncertain,
@@ -307,7 +389,7 @@ def iniciar_cobro(
     response = _request_with_breaker(
         lambda: httpx.post(
             f"{PAYMENTS_API_URL}/payments/charge",
-            headers={"Idempotency-Key": idempotency_key},
+            headers=_request_headers({"Idempotency-Key": idempotency_key}),
             json={
                 "rental_id": rental_id,
                 "customer_id": customer_id,
