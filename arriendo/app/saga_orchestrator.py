@@ -442,7 +442,7 @@ def _compensate_delivery_failure(
         saga.id,
         "RELEASE_EQUIPMENT",
         "COMPLETED",
-        f"Equipo {equipment_id} liberado.",
+        f"Equipo {rental.equipment_id} liberado.",
     )
 
 
