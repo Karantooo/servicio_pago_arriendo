@@ -1,11 +1,26 @@
 services:
+  gateway:
+    image: krakend:latest
+    restart: always
+    ports:
+      - "${KRAKEND_PORT:-8080}:8080"
+    volumes:
+      - ./api_gateway/krakend.json:/etc/krakend/krakend.json:ro
+      - ./api_gateway/jwk-symmetric.json:/etc/krakend/jwk-symmetric.json:ro
+    command: ["run", "-d", "-c", "/etc/krakend/krakend.json"]
+    depends_on:
+      arriendos-api:
+        condition: service_healthy
+      entregas-api:
+        condition: service_healthy
+      payments-api:
+        condition: service_healthy
+
   equipos-api:
     build:
       context: ./Equipos
       dockerfile: Dockerfile
       target: base
-
-    container_name: equipos-api
 
     env_file:
       - .env
@@ -22,11 +37,7 @@ services:
       additional_contexts:
         equipos: ./Equipos  # Para poder acceder a equipos.proto
 
-    container_name: arriendos-api
     restart: always
-
-    ports:
-      - "${ARRIENDOS_API_PORT}:8080"
 
     environment:
       DATABASE_URL: postgresql://${ARRIENDO_DB_USER}:${ARRIENDO_DB_PASSWORD}@arriendo-db:5432/${ARRIENDO_DB_NAME}
@@ -55,10 +66,7 @@ services:
       context: ./Entregas/generated_server
       dockerfile: Dockerfile
       target: base
-    container_name: entregas-api
     restart: always
-    ports:
-      - "${ENTREGAS_API_PORT:-8081}:8081"
     environment:
       DATABASE_URL: sqlite:////data/entregas.db
       ADMIN_API_KEY: ${ADMIN_API_KEY}
@@ -76,10 +84,7 @@ services:
     build:
       context: ./pagos
       dockerfile: Dockerfile
-    container_name: payments-api
     restart: always
-    ports:
-      - "8003:8003"
     environment:
       PAYMENTS_DATABASE_URL: postgresql+psycopg://${PAYMENTS_DB_USER}:${PAYMENTS_DB_PASSWORD}@payments-db:5432/${PAYMENTS_DB_NAME}
       RENTALS_API_URL: http://arriendos-api:8080
@@ -90,7 +95,7 @@ services:
       PAYMENTS_CIRCUIT_FAILURE_THRESHOLD: ${PAYMENTS_CIRCUIT_FAILURE_THRESHOLD:-3}
       PAYMENTS_CIRCUIT_OPEN_SECONDS: ${PAYMENTS_CIRCUIT_OPEN_SECONDS:-15}
       PAYMENTS_BULKHEAD_CAPACITY: ${PAYMENTS_BULKHEAD_CAPACITY:-5}
-      PAYMENTS_TRANSBANK_RETURN_URL: ${PAYMENTS_TRANSBANK_RETURN_URL:-http://localhost:8003/payments/transbank/return}
+      PAYMENTS_TRANSBANK_RETURN_URL: ${PAYMENTS_TRANSBANK_RETURN_URL:-http://localhost:${KRAKEND_PORT:-8080}/payments/transbank/return}
     depends_on:
       payments-db:
         condition: service_healthy
@@ -109,7 +114,6 @@ services:
 
   payments-db:
     image: postgres:16-alpine
-    container_name: payments-db
     restart: always
     environment:
       POSTGRES_DB: ${PAYMENTS_DB_NAME}
@@ -129,7 +133,6 @@ services:
 
   arriendos-redis:
     image: redis:7-alpine
-    container_name: arriendos-redis
     restart: always
 
     healthcheck:
@@ -140,8 +143,6 @@ services:
 
   equipos-db:
     image: postgres:16-alpine
-    container_name: equipos-db
-
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -162,7 +163,6 @@ services:
 
   arriendo-db:
     image: postgres:16-alpine
-    container_name: arriendo-db
     restart: always
 
     environment:
