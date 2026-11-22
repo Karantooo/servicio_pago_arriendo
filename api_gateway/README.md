@@ -1,36 +1,32 @@
-# API Gateway de prueba
+# API Gateway y BFF
 
-La configuración usa KrakenD Community como única entrada HTTP. Los backends
-mock son servicios internos de Docker y no publican puertos al host; se pueden
-reemplazar por los servicios reales cuando sus contratos estén definidos.
-
-## Capacidades demostradas
-
-- `/api/profile` y `/api/dashboard` validan un JWT HS256 antes de enrutar.
-- `/api/dashboard` agrega en paralelo `profile` y `rentals` en una respuesta
-  adaptada al cliente.
-- Los endpoints protegidos limitan a 10 solicitudes por segundo por IP y a 100
-  solicitudes por segundo globales.
-- Cada backend tiene un límite de salida y un circuit breaker.
-- `/api/rentals-unstable` responde con un backend que falla para observar la
-  apertura del circuit breaker en los logs de KrakenD.
-- `/health` permite comprobar el gateway sin autenticación.
-
-La clave de prueba está únicamente en `jwk-symmetric.json`. Debe cambiarse
-antes de cualquier despliegue real y no debe reutilizarse en producción.
+KrakenD forma parte del Compose raíz y es el único servicio HTTP publicado al
+host. Los backends usan DNS interno de Docker (`arriendos-api`,
+`entregas-api` y `payments-api`).
 
 ## Ejecución
 
-Desde `api_gateway/`:
+Desde la raíz del repositorio:
 
 ```bash
-docker compose -f docker-compose.gateway.yml up --build
+docker compose up --build
 ```
 
-Crear un token de prueba (requiere Python, sin dependencias externas):
+Las rutas de dominio requieren JWT HS256 y la `API-Key` de cliente/admin que
+usan los servicios existentes. KrakenD valida el JWT y reenvía `API-Key` al
+backend; no devuelve ese header ni las credenciales en la respuesta. El endpoint
+`/api/rental-summary/{rentalId}` consulta en paralelo Arriendos y Entregas y
+agrupa las respuestas como `rental` y `delivery`.
+
+La clave de firma incluida en `jwk-symmetric.json` es solo para desarrollo. Debe
+reemplazarse antes de cualquier despliegue compartido o de producción.
+
+## Prueba local
+
+Generar un JWT de prueba con Python:
 
 ```bash
-python3 - <<'PY'
+TOKEN=$(python3 - <<'PY'
 import base64, hashlib, hmac, json
 
 encode = lambda value: base64.urlsafe_b64encode(
@@ -50,25 +46,24 @@ signature = base64.urlsafe_b64encode(
 ).rstrip(b"=").decode()
 print(f"{header}.{payload}.{signature}")
 PY
+)
 ```
 
-Usar el token impreso:
+Con JWT y la API key readonly local (`CLIENT_API_KEY` del `.env`):
 
 ```bash
-curl http://localhost:8080/health
-curl -H "Authorization: Bearer <TOKEN>" http://localhost:8080/api/profile
-curl -H "Authorization: Bearer <TOKEN>" http://localhost:8080/api/dashboard
+curl -i \
+  --oauth2-bearer "$TOKEN" \
+  -H "API-Key: apikey_cliente" \
+  http://localhost:8080/api/rental-summary/1
 ```
 
-Una solicitud protegida sin token responde `401`. El límite por cliente se
-puede observar enviando más de 10 solicitudes por segundo desde la misma IP;
-KrakenD responderá `429`.
-
-Para observar el circuit breaker:
+Sin JWT, KrakenD debe responder `401` antes de llamar a los servicios:
 
 ```bash
-for i in 1 2 3 4 5; do
-  curl -i -H "Authorization: Bearer <TOKEN>" \
-    http://localhost:8080/api/rentals-unstable
-done
+curl -i -H "API-Key: apikey_cliente" \
+  http://localhost:8080/api/rentals/1
 ```
+
+El límite de las rutas protegidas es de 10 solicitudes por segundo por IP
+(además del límite global definido en `krakend.json`).
