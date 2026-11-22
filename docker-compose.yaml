@@ -74,6 +74,7 @@ services:
       RENTALS_API_URL: http://arriendos-api:8080
       RENTALS_API_KEY: ${ADMIN_API_KEY}
       RENTALS_TIMEOUT_SECONDS: ${RENTALS_TIMEOUT_SECONDS:-5}
+      DELIVERIES_ENABLE_FAILURE_INJECTION: ${DELIVERIES_ENABLE_FAILURE_INJECTION:-false}
     volumes:
       - entregas_data:/data
     depends_on:
@@ -87,6 +88,7 @@ services:
     restart: always
     environment:
       PAYMENTS_DATABASE_URL: postgresql+psycopg://${PAYMENTS_DB_USER}:${PAYMENTS_DB_PASSWORD}@payments-db:5432/${PAYMENTS_DB_NAME}
+      ADMIN_API_KEY: ${ADMIN_API_KEY}
       RENTALS_API_URL: http://arriendos-api:8080
       RENTALS_API_KEY: ${ADMIN_API_KEY}
       PAYMENTS_PROVIDER: ${PAYMENTS_PROVIDER:-mock}
