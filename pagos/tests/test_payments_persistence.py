@@ -10,9 +10,12 @@ from pagos.main import app
 from pagos.providers import get_provider
 from pagos.resilience import circuit_breaker
 
+ADMIN_HEADERS = {"X-Admin-Key": "payments-test-admin-key"}
+
 
 @pytest.fixture(autouse=True)
-def reset_database():
+def reset_database(monkeypatch):
+    monkeypatch.setenv("ADMIN_API_KEY", "payments-test-admin-key")
     initialize_database()
     with SessionLocal() as db:
         db.query(Refund).delete()
@@ -86,6 +89,29 @@ def test_provider_failure_is_persisted_as_unknown_without_recharging(client):
     assert retry.json()["status"] == "UNKNOWN"
     with SessionLocal() as db:
         assert db.query(Payment).count() == 1
+
+
+def test_mock_provider_mode_requires_admin_key(client):
+    unauthorized = client.post(
+        "/payments/mock-provider/mode",
+        json={"mode": "SLOW"},
+    )
+    forbidden = client.post(
+        "/payments/mock-provider/mode",
+        headers={"X-Admin-Key": "wrong-key"},
+        json={"mode": "SLOW"},
+    )
+    allowed = client.post(
+        "/payments/mock-provider/mode",
+        headers=ADMIN_HEADERS,
+        json={"mode": "SLOW"},
+    )
+
+    assert unauthorized.status_code == 401
+    assert forbidden.status_code == 403
+    assert allowed.status_code == 200
+    assert allowed.json() == {"status": "ok", "mode": "SLOW"}
+    assert client.get("/payments/mock-provider/mode").json()["mode"] == "SLOW"
 
 
 def test_payment_return_and_refund_are_persisted_and_idempotent(client):
