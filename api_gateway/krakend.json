@@ -36,7 +36,7 @@
     {
       "endpoint": "/api/rentals",
       "method": "GET",
-      "input_headers": ["API-Key"],
+      "input_headers": ["API-Key", "X-Request-ID"],
       "input_query_strings": ["limit", "offset"],
       "output_encoding": "no-op",
       "backend": [
@@ -78,7 +78,7 @@
     {
       "endpoint": "/api/rentals",
       "method": "POST",
-      "input_headers": ["API-Key", "Content-Type", "Idempotency-Key"],
+      "input_headers": ["API-Key", "Content-Type", "Idempotency-Key", "X-Request-ID"],
       "output_encoding": "no-op",
       "backend": [
         {
@@ -119,7 +119,7 @@
     {
       "endpoint": "/api/rentals/{rentalId}",
       "method": "GET",
-      "input_headers": ["API-Key"],
+      "input_headers": ["API-Key", "X-Request-ID"],
       "output_encoding": "no-op",
       "backend": [
         {
@@ -160,7 +160,7 @@
     {
       "endpoint": "/api/rentals/{rentalId}/saga",
       "method": "GET",
-      "input_headers": ["API-Key"],
+      "input_headers": ["API-Key", "X-Request-ID"],
       "output_encoding": "no-op",
       "backend": [
         {
@@ -201,7 +201,7 @@
     {
       "endpoint": "/api/rentals/{rentalId}/delivery",
       "method": "GET",
-      "input_headers": ["API-Key"],
+      "input_headers": ["API-Key", "X-Request-ID"],
       "output_encoding": "no-op",
       "backend": [
         {
@@ -242,7 +242,7 @@
     {
       "endpoint": "/api/deliveries",
       "method": "POST",
-      "input_headers": ["API-Key", "Content-Type", "Idempotency-Key"],
+      "input_headers": ["API-Key", "Content-Type", "Idempotency-Key", "X-Request-ID"],
       "output_encoding": "no-op",
       "backend": [
         {
@@ -283,7 +283,7 @@
     {
       "endpoint": "/api/admin/failure-injection",
       "method": "POST",
-      "input_headers": ["API-Key", "Content-Type"],
+      "input_headers": ["API-Key", "Content-Type", "X-Request-ID"],
       "output_encoding": "no-op",
       "backend": [
         {
@@ -315,7 +315,7 @@
     {
       "endpoint": "/api/rental-summary/{rentalId}",
       "method": "GET",
-      "input_headers": ["API-Key"],
+      "input_headers": ["API-Key", "X-Request-ID"],
       "output_encoding": "json",
       "backend": [
         {
@@ -413,7 +413,7 @@
     {
       "endpoint": "/api/payments/{payment_id}",
       "method": "GET",
-      "input_headers": [],
+      "input_headers": ["X-Request-ID"],
       "output_encoding": "no-op",
       "backend": [
         {
@@ -495,7 +495,7 @@
     {
       "endpoint": "/api/admin/payments/mock-provider/mode",
       "method": "POST",
-      "input_headers": ["X-Admin-Key", "Content-Type"],
+      "input_headers": ["X-Admin-Key", "Content-Type", "X-Request-ID"],
       "output_encoding": "no-op",
       "backend": [
         {
@@ -551,7 +551,7 @@
     {
       "endpoint": "/payments/transbank/return",
       "method": "POST",
-      "input_headers": ["Content-Type"],
+      "input_headers": ["Content-Type", "X-Request-ID"],
       "output_encoding": "no-op",
       "backend": [
         {

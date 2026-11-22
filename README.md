@@ -113,6 +113,18 @@ El repositorio incluye el microservicio `pagos` con un contrato `pagos/open-api-
 - Timeouts en cascada: Transbank usa 1 s (`PAYMENTS_EXTERNAL_TIMEOUT_SECONDS`), Pagos espera hasta 2 s (`PAYMENTS_PROVIDER_TIMEOUT_SECONDS`), Arriendos hasta 3 s (`PAYMENTS_TIMEOUT_SECONDS`) y KrakenD hasta 5 s (`api_gateway/krakend.json`).
 - El Circuit Breaker de Arriendos protege las llamadas a Pagos; el estado `PAYMENT_PENDING_RETRY` queda guardado en la Saga y se consulta en `GET /v2/rentals/{rentalId}/saga`.
 - El Bulkhead ejecuta como máximo cinco llamadas en un `ThreadPoolExecutor` acotado y conserva el cupo hasta que termina la tarea real, incluso si vence el timeout HTTP.
+- Los tres servicios exponen `/metrics` en formato Prometheus con latencia HTTP (`service`, `endpoint`, `status_code`), estado del Circuit Breaker donde aplica y rechazos del Bulkhead en Pagos. Arriendos publica el contador de rechazos en cero porque no implementa Bulkhead.
+- Los logs de aplicación son JSON y correlacionan `X-Request-ID` (generado si no llega del Gateway); el mismo identificador se propaga entre servicios.
+
+Consultar la instrumentación desde el host usando el puerto de cada API dentro de su contenedor:
+
+```bash
+docker compose exec payments-api sh -c "python -c \"from urllib.request import urlopen; print(urlopen('http://localhost:8003/metrics').read().decode())\" | grep -E 'circuit_breaker_state|bulkhead_rejections_total|http_request_duration_seconds'"
+docker compose exec arriendos-api sh -c "python -c \"from urllib.request import urlopen; print(urlopen('http://localhost:8080/metrics').read().decode())\" | grep -E 'circuit_breaker_state|bulkhead_rejections_total|http_request_duration_seconds'"
+docker compose exec entregas-api sh -c "python -c \"from urllib.request import urlopen; print(urlopen('http://localhost:8081/metrics').read().decode())\" | grep 'http_request_duration_seconds'"
+```
+
+La respuesta se filtra para mostrar el estado del circuito, rechazos del Bulkhead y latencias (`http_request_duration_seconds_bucket`, `_count` y `_sum`).
 
 Pagos persiste transacciones, reembolsos y claves de idempotencia en su propia base PostgreSQL (`payments-db`) y volumen (`payments_pg_data`). Los estados `UNKNOWN` se conservan para evitar que un reintento incierto inicie un segundo cobro o reembolso.
 
