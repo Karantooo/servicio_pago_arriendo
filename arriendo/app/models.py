@@ -92,10 +92,20 @@ class RentalResponse(BaseModel):
     status: Status = Field(..., description='Estado del arriendo', examples=['ACTIVE'])
 
 class PaymentCheckout(BaseModel):
-    paymentId: int
-    status: Literal["PENDING", "CHARGED", "FAILED", "CANCELLED", "UNKNOWN"]
+    paymentId: int | None = None
+    status: Literal[
+        "PENDING",
+        "CHARGED",
+        "FAILED",
+        "CANCELLED",
+        "UNKNOWN",
+        "PAYMENT_PENDING_RETRY",
+        "CONFIRMATION_PENDING_RETRY",
+    ]
     redirectUrl: str | None = None
     token: str | None = None
+    transactionId: str | None = None
+    message: str | None = None
 
 
 class RentalCreationResponse(BaseModel):

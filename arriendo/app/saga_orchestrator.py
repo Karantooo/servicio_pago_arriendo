@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime
+from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException, status
@@ -73,7 +74,12 @@ def find_creation_by_key(
                 "message": "La clave de idempotencia ya se usó con otra solicitud.",
             },
         )
-    if saga.status in {"FAILED", "COMPENSATED", "COMPENSATION_FAILED"} or saga.payment_id is None or saga.checkout_status is None:
+    pending_retry = saga.checkout_status == "PAYMENT_PENDING_RETRY"
+    if (
+        saga.status in {"FAILED", "COMPENSATED", "COMPENSATION_FAILED"}
+        or (saga.payment_id is None and not pending_retry)
+        or saga.checkout_status is None
+    ):
         error_code = (
             "RENTAL_CREATION_UNCERTAIN"
             if saga.status in {"IN_DOUBT", "COMPENSATION_FAILED"}
@@ -99,6 +105,8 @@ def find_creation_by_key(
         status=saga.checkout_status,
         redirectUrl=saga.checkout_redirect_url,
         token=saga.checkout_token,
+        transactionId=saga.id if pending_retry else None,
+        message=saga.error if pending_retry else None,
     )
 
 
@@ -227,10 +235,12 @@ def create_rental(
         ) from error
     except PaymentStartUncertain as error:
         _record_payment_uncertainty(db, saga.id, error)
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail={"code": "PAYMENT_UNCERTAIN", "message": str(error)},
-        ) from error
+        return rental, PaymentCheckout(
+            paymentId=error.payment_id,
+            status="PAYMENT_PENDING_RETRY",
+            transactionId=saga.id,
+            message=str(error),
+        )
 
     _record_saga_event(
         db,
@@ -281,8 +291,24 @@ def _record_payment_uncertainty(db: Session, saga_id: str, error: Exception) -> 
         raise RuntimeError("No se encontró la Saga al registrar el pago incierto.")
     saga.status = "IN_DOUBT"
     saga.current_step = "START_PAYMENT"
+    if isinstance(error, PaymentStartUncertain):
+        saga.payment_id = error.payment_id
+    saga.checkout_status = "PAYMENT_PENDING_RETRY"
+    saga.checkout_redirect_url = None
+    saga.checkout_token = None
     saga.error = str(error)
     db.commit()
+
+
+def _payment_pending_retry_detail(saga: Saga, error: Exception) -> dict[str, Any]:
+    return {
+        "code": "PAYMENT_PENDING_RETRY",
+        "status": "PAYMENT_PENDING_RETRY",
+        "rentalId": saga.rental_id,
+        "paymentId": saga.payment_id,
+        "transactionId": saga.id,
+        "message": str(error),
+    }
 
 
 def _record_delivery_failure(
@@ -628,7 +654,7 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
             _mark_payment_in_doubt(db, saga.id, error)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={"code": "PAYMENT_UNCERTAIN", "message": str(error)},
+                detail=_payment_pending_retry_detail(saga, error),
             ) from error
         recovered = db.execute(
             update(Saga)
@@ -665,8 +691,42 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
         _mark_payment_in_doubt(db, saga.id, error)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"code": "PAYMENT_UNCERTAIN", "message": str(error)},
+            detail=_payment_pending_retry_detail(saga, error),
         ) from error
+
+    if payment.status == "PAYMENT_PENDING_RETRY":
+        try:
+            checkout = iniciar_cobro(
+                rental_id=rental.id,
+                customer_id=rental.client_id,
+                amount_rent=rental.amount_rent,
+                amount_deposit=rental.amount_deposit,
+                idempotency_key=saga.idempotency_key,
+                require_checkout=False,
+            )
+        except PaymentStartRejected as error:
+            _compensate_failed_payment(db, saga.id, rental.id, error)
+            return db.get(Saga, saga.id)
+        except PaymentStartUncertain as error:
+            _mark_payment_in_doubt(db, saga.id, error)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=_payment_pending_retry_detail(saga, error),
+            ) from error
+        if checkout.paymentId != saga.payment_id:
+            _mark_payment_in_doubt(
+                db,
+                saga.id,
+                ValueError("El reintento devolvió un ID de pago diferente."),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "code": "PAYMENT_MISMATCH",
+                    "message": "El reintento devolvió un ID de pago diferente.",
+                },
+            )
+        payment = consultar_pago(saga.payment_id)
 
     if payment.rental_id != rental.id or payment.amount_total != rental.amount_rent + rental.amount_deposit:
         _mark_payment_in_doubt(db, saga.id, ValueError("El cobro no coincide con el arriendo."))
@@ -723,6 +783,11 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
 
 def _mark_payment_in_doubt(db: Session, saga_id: str, error: Exception) -> None:
     db.rollback()
+    changes: dict[str, Any] = {"status": "IN_DOUBT", "error": str(error)}
+    if isinstance(error, (PaymentStartUncertain, PaymentLookupUncertain)):
+        changes["checkout_status"] = "PAYMENT_PENDING_RETRY"
+    if isinstance(error, PaymentStartUncertain) and error.payment_id is not None:
+        changes["payment_id"] = error.payment_id
     db.execute(
         update(Saga)
         .where(
@@ -730,7 +795,7 @@ def _mark_payment_in_doubt(db: Session, saga_id: str, error: Exception) -> None:
             Saga.status.in_(["IN_PROGRESS", "IN_DOUBT"]),
             Saga.current_step.in_(["START_PAYMENT", "WAITING_PAYMENT"]),
         )
-        .values(status="IN_DOUBT", error=str(error))
+        .values(**changes)
     )
     db.commit()
 

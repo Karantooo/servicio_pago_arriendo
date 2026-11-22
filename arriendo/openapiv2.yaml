@@ -613,6 +613,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RentalCreationResponse'
+        '202':
+          description: Arriendo persistido; el pago quedó pendiente de reintento y puede consultarse por Saga.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RentalCreationResponse'
         '400':
           description: Datos o fechas inválidos
           content:
@@ -1123,12 +1129,12 @@ components:
     PaymentCheckout:
       type: object
       required:
-      - paymentId
       - status
       properties:
         paymentId:
           type: integer
           format: int64
+          nullable: true
         status:
           type: string
           enum:
@@ -1137,11 +1143,20 @@ components:
           - FAILED
           - CANCELLED
           - UNKNOWN
+          - PAYMENT_PENDING_RETRY
+          - CONFIRMATION_PENDING_RETRY
         redirectUrl:
           type: string
           format: uri
           nullable: true
         token:
+          type: string
+          nullable: true
+        transactionId:
+          type: string
+          nullable: true
+          description: ID de Saga para consultar el estado pendiente.
+        message:
           type: string
           nullable: true
 

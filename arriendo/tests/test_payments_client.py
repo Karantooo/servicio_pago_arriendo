@@ -96,3 +96,49 @@ def test_consultar_pago_rechaza_identidad_inconsistente(monkeypatch):
     )
     with pytest.raises(PaymentLookupUncertain):
         payments_client.consultar_pago(501)
+
+
+def test_circuit_breaker_abierto_rechaza_llamada_y_devuelve_a_closed_al_recuperarse(
+    monkeypatch,
+):
+    breaker = payments_client.PaymentServiceCircuitBreaker(
+        threshold=1,
+        open_seconds=30,
+    )
+    monkeypatch.setattr(payments_client, "payments_circuit_breaker", breaker)
+    calls = 0
+
+    def failing_post(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise httpx.ConnectError("payments-api no disponible")
+
+    monkeypatch.setattr(payments_client.httpx, "post", failing_post)
+
+    with pytest.raises(PaymentStartUncertain):
+        iniciar_cobro_de_prueba()
+    assert breaker.state == "OPEN"
+
+    with pytest.raises(
+        PaymentStartUncertain,
+        match="pago pendiente de reintento",
+    ):
+        iniciar_cobro_de_prueba()
+    assert calls == 1
+
+    breaker.on_success()
+    monkeypatch.setattr(
+        payments_client.httpx,
+        "post",
+        lambda *args, **kwargs: httpx.Response(
+            201,
+            json={
+                "payment_id": 501,
+                "status": "PENDING",
+                "redirect_url": "https://webpay.example/pagar",
+                "token": "token-501",
+            },
+        ),
+    )
+    assert iniciar_cobro_de_prueba().paymentId == 501
+    assert breaker.state == "CLOSED"

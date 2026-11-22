@@ -348,10 +348,21 @@ def test_v2_uncertain_payment_keeps_reservation(client, db_session, monkeypatch)
         headers=IDEMPOTENCY_HEADERS,
     )
 
-    assert response.status_code == 504
+    assert response.status_code == 202
+    body = response.json()
+    assert body["payment"]["status"] == "PAYMENT_PENDING_RETRY"
+    assert body["payment"]["paymentId"] is None
+    assert body["payment"]["transactionId"]
+    assert body["payment"]["message"] == "Timeout"
     assert released == []
     assert db_session.query(Rental).one().status == "PENDING"
-    assert db_session.query(Saga).one().status == "IN_DOUBT"
+    saga = db_session.query(Saga).one()
+    assert saga.status == "IN_DOUBT"
+    assert saga.checkout_status == "PAYMENT_PENDING_RETRY"
+
+    saga_status = client.get(f"/v2/rentals/{saga.rental_id}/saga")
+    assert saga_status.status_code == 200
+    assert saga_status.json()["paymentStatus"] == "PAYMENT_PENDING_RETRY"
 
 
 def test_v2_unknown_charge_is_not_confirmed(client, db_session, monkeypatch):
@@ -757,7 +768,8 @@ def test_reconcile_recovers_missing_payment_id_with_original_key(client, db_sess
 
     monkeypatch.setattr(saga_orchestrator, "iniciar_cobro", charge)
     created = client.post("/v2/rentals", json={**PAYLOAD, "clientId": client_id}, headers=IDEMPOTENCY_HEADERS)
-    assert created.status_code == 504
+    assert created.status_code == 202
+    assert created.json()["payment"]["status"] == "PAYMENT_PENDING_RETRY"
     rental_id = db_session.query(Rental).one().id
     monkeypatch.setattr(saga_orchestrator, "consultar_pago", lambda _: _pending_payment(rental_id))
 
@@ -795,6 +807,9 @@ def test_reconcile_unknown_and_lookup_failure_keep_reservation(client, db_sessio
     monkeypatch.setattr(saga_orchestrator, "consultar_pago", lookup_failure)
     failure = client.post(f"/v2/rentals/{rental_id}/reconcile-payment")
     assert failure.status_code == 503
+    assert failure.json()["code"] == "PAYMENT_PENDING_RETRY"
+    assert failure.json()["rentalId"] == rental_id
+    assert failure.json()["transactionId"]
     assert released == []
     assert db_session.get(Rental, rental_id).status == "PENDING"
 

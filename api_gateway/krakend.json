@@ -158,6 +158,47 @@
       }
     },
     {
+      "endpoint": "/api/rentals/{rentalId}/saga",
+      "method": "GET",
+      "input_headers": ["API-Key"],
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": ["http://arriendos-api:8080"],
+          "url_pattern": "/v2/rentals/{rentalId}/saga",
+          "encoding": "no-op",
+          "extra_config": {
+            "qos/circuit-breaker": {
+              "interval": 60,
+              "timeout": 10,
+              "max_errors": 3,
+              "name": "cb-rental-saga-status",
+              "log_status_change": true
+            }
+          }
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["cliente", "admin"],
+          "roles_key": "roles"
+        },
+        "qos/ratelimit/router": {
+          "max_rate": 100,
+          "every": "1s",
+          "capacity": 100,
+          "client_max_rate": 10,
+          "client_capacity": 10,
+          "strategy": "ip"
+        }
+      }
+    },
+    {
       "endpoint": "/api/rentals/{rentalId}/delivery",
       "method": "GET",
       "input_headers": ["API-Key"],

@@ -1,6 +1,8 @@
 import os
+import threading
+import time
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal
 
 import httpx
 from pydantic import ValidationError
@@ -14,17 +16,135 @@ PAYMENTS_API_URL = os.getenv(
 PAYMENTS_TIMEOUT_SECONDS = float(
     os.getenv("PAYMENTS_TIMEOUT_SECONDS", "3")
 )
+PAYMENTS_PROVIDER_TIMEOUT_SECONDS = float(
+    os.getenv("PAYMENTS_PROVIDER_TIMEOUT_SECONDS", "2")
+)
 
-if PAYMENTS_TIMEOUT_SECONDS <= 0:
-    raise ValueError("PAYMENTS_TIMEOUT_SECONDS debe ser mayor que cero")
+if not 0 < PAYMENTS_PROVIDER_TIMEOUT_SECONDS < PAYMENTS_TIMEOUT_SECONDS:
+    raise ValueError(
+        "PAYMENTS_PROVIDER_TIMEOUT_SECONDS debe ser positivo y menor que "
+        "PAYMENTS_TIMEOUT_SECONDS"
+    )
+PAYMENTS_CIRCUIT_FAILURE_THRESHOLD = int(
+    os.getenv("PAYMENTS_CIRCUIT_FAILURE_THRESHOLD", "3")
+)
+PAYMENTS_CIRCUIT_OPEN_SECONDS = float(
+    os.getenv("PAYMENTS_CIRCUIT_OPEN_SECONDS", "15")
+)
+if PAYMENTS_CIRCUIT_FAILURE_THRESHOLD < 1 or PAYMENTS_CIRCUIT_OPEN_SECONDS <= 0:
+    raise ValueError("La configuración del Circuit Breaker de Pagos no es válida")
+
+
+class PaymentCircuitOpen(Exception):
+    """El Circuit Breaker de Arriendos no admite temporalmente llamadas a Pagos."""
+
+
+class PaymentServiceCircuitBreaker:
+    def __init__(self, threshold: int, open_seconds: float) -> None:
+        self.threshold = threshold
+        self.open_seconds = open_seconds
+        self.failures = 0
+        self.state: Literal["CLOSED", "OPEN", "HALF_OPEN"] = "CLOSED"
+        self.opened_at: float | None = None
+        self.probe_in_flight = False
+        self._lock = threading.Lock()
+
+    def before_call(self) -> None:
+        with self._lock:
+            if self.state == "OPEN":
+                if (
+                    self.opened_at is None
+                    or time.monotonic() - self.opened_at < self.open_seconds
+                ):
+                    raise PaymentCircuitOpen("El circuito de Pagos está abierto.")
+                self.state = "HALF_OPEN"
+            if self.state == "HALF_OPEN":
+                if self.probe_in_flight:
+                    raise PaymentCircuitOpen(
+                        "El circuito de Pagos está probando una solicitud."
+                    )
+                self.probe_in_flight = True
+
+    def on_success(self) -> None:
+        with self._lock:
+            self.failures = 0
+            self.state = "CLOSED"
+            self.opened_at = None
+            self.probe_in_flight = False
+
+    def on_failure(self) -> None:
+        with self._lock:
+            if self.state == "HALF_OPEN":
+                self.state = "OPEN"
+                self.opened_at = time.monotonic()
+                self.probe_in_flight = False
+                return
+            self.failures += 1
+            if self.failures >= self.threshold:
+                self.state = "OPEN"
+                self.opened_at = time.monotonic()
+                self.probe_in_flight = False
+
+    def release_probe(self) -> None:
+        with self._lock:
+            if self.state == "HALF_OPEN":
+                self.probe_in_flight = False
+
+
+payments_circuit_breaker = PaymentServiceCircuitBreaker(
+    PAYMENTS_CIRCUIT_FAILURE_THRESHOLD,
+    PAYMENTS_CIRCUIT_OPEN_SECONDS,
+)
+
+
+def _request_with_breaker(
+    request: Callable[[], httpx.Response],
+    make_uncertain: Callable[[str], Exception],
+) -> httpx.Response:
+    try:
+        payments_circuit_breaker.before_call()
+    except PaymentCircuitOpen as error:
+        raise make_uncertain(
+            "Pagos temporalmente no disponible; pago pendiente de reintento."
+        ) from error
+    try:
+        response = request()
+    except httpx.RequestError as error:
+        payments_circuit_breaker.on_failure()
+        raise make_uncertain(
+            "No se recibió una respuesta de Pagos."
+        ) from error
+    if response.status_code >= 500 or response.status_code == 429:
+        payments_circuit_breaker.on_failure()
+    else:
+        payments_circuit_breaker.on_success()
+    return response
 
 
 class PaymentStartRejected(Exception):
     """Pagos rechazó los datos y no inició el cobro."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        payment_id: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.payment_id = payment_id
+
 
 class PaymentStartUncertain(Exception):
     """No se pudo confirmar si Pagos inició el cobro."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        payment_id: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.payment_id = payment_id
 
 
 class PaymentLookupUncertain(Exception):
@@ -50,6 +170,8 @@ class PaymentState:
         "FAILED",
         "CANCELLED",
         "UNKNOWN",
+        "PAYMENT_PENDING_RETRY",
+        "CONFIRMATION_PENDING_RETRY",
         "REFUND_PENDING",
         "REFUNDED",
     ]
@@ -68,8 +190,8 @@ def reembolsar_pago(
     rental_id: int,
     idempotency_key: str,
 ) -> RefundState:
-    try:
-        response = httpx.post(
+    response = _request_with_breaker(
+        lambda: httpx.post(
             f"{PAYMENTS_API_URL}/payments/{payment_id}/refund",
             headers={"Idempotency-Key": idempotency_key},
             json={
@@ -77,11 +199,9 @@ def reembolsar_pago(
                 "rental_id": rental_id,
             },
             timeout=PAYMENTS_TIMEOUT_SECONDS,
-        )
-    except httpx.RequestError as error:
-        raise RefundUncertain(
-            "No se recibió una respuesta al solicitar el reembolso."
-        ) from error
+        ),
+        RefundUncertain,
+    )
 
     if response.status_code in {400, 404, 409}:
         raise RefundRejected(
@@ -128,13 +248,13 @@ def _refund_error_message(response: httpx.Response, fallback: str) -> str:
 
 
 def consultar_pago(payment_id: int) -> PaymentState:
-    try:
-        response = httpx.get(
+    response = _request_with_breaker(
+        lambda: httpx.get(
             f"{PAYMENTS_API_URL}/payments/{payment_id}",
             timeout=PAYMENTS_TIMEOUT_SECONDS,
-        )
-    except httpx.RequestError as error:
-        raise PaymentLookupUncertain("No se recibió una respuesta de Pagos.") from error
+        ),
+        PaymentLookupUncertain,
+    )
 
     if response.status_code != 200:
         raise PaymentLookupUncertain(
@@ -162,6 +282,8 @@ def consultar_pago(payment_id: int) -> PaymentState:
                 "FAILED",
                 "CANCELLED",
                 "UNKNOWN",
+                "PAYMENT_PENDING_RETRY",
+                "CONFIRMATION_PENDING_RETRY",
                 "REFUND_PENDING",
                 "REFUNDED",
             }
@@ -182,8 +304,8 @@ def iniciar_cobro(
     idempotency_key: str,
     require_checkout: bool = True,
 ) -> PaymentCheckout:
-    try:
-        response = httpx.post(
+    response = _request_with_breaker(
+        lambda: httpx.post(
             f"{PAYMENTS_API_URL}/payments/charge",
             headers={"Idempotency-Key": idempotency_key},
             json={
@@ -193,11 +315,9 @@ def iniciar_cobro(
                 "amount_deposit": amount_deposit,
             },
             timeout=PAYMENTS_TIMEOUT_SECONDS,
-        )
-    except httpx.RequestError as error:
-        raise PaymentStartUncertain(
-            "No se recibió una respuesta de Pagos."
-        ) from error
+        ),
+        PaymentStartUncertain,
+    )
 
     if response.status_code == 400:
         raise PaymentStartRejected(
@@ -205,9 +325,23 @@ def iniciar_cobro(
         )
 
     if response.status_code not in (200, 201):
+        payment_id = None
+        message = None
+        try:
+            body = response.json()
+            detail = body.get("detail", {}) if isinstance(body, dict) else {}
+            if isinstance(detail, dict) and detail.get("payment_id") is not None:
+                payment_id = int(detail["payment_id"])
+            if isinstance(detail, dict) and detail.get("message"):
+                message = str(detail["message"])
+        except (ValueError, TypeError):
+            pass
         raise PaymentStartUncertain(
-            f"Pagos respondió HTTP {response.status_code}; "
-            "se debe consultar el estado antes de reintentar."
+            message or (
+                f"Pagos respondió HTTP {response.status_code}; "
+                "se debe consultar el estado antes de reintentar."
+            ),
+            payment_id=payment_id,
         )
 
     try:
@@ -222,6 +356,11 @@ def iniciar_cobro(
         raise PaymentStartUncertain(
             "Pagos respondió, pero no se pudo interpretar el resultado."
         ) from error
+
+    if checkout.paymentId is None:
+        raise PaymentStartUncertain(
+            "Pagos respondió sin un identificador de pago consultable."
+        )
 
     if require_checkout and checkout.status == "PENDING" and (
         not checkout.redirectUrl or not checkout.token

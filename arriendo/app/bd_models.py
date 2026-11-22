@@ -57,7 +57,7 @@ class Saga(Base):
     refund_id = Column(BigInteger, nullable=True)
     refund_status = Column(String(20), nullable=True)
     equipment_release_status = Column(String(20), nullable=True)
-    checkout_status = Column(String(20), nullable=True)
+    checkout_status = Column(String(30), nullable=True)
     checkout_redirect_url = Column(Text, nullable=True)
     checkout_token = Column(Text, nullable=True)
     error = Column(Text, nullable=True)

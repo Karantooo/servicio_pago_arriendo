@@ -49,6 +49,7 @@ logger = logging.getLogger(__name__)
         403: {"model": ForbiddenError},
         404: {"model": NotFoundError},
         409: {"model": ConflictError},
+        202: {"model": RentalCreationResponse, "description": "Pago pendiente de reintento; consultar estado de Saga."},
         500: {"model": InternalServerError},
         502: {"model": BadGatewayError},
         503: {"model": ServiceUnavailableError},
@@ -57,6 +58,7 @@ logger = logging.getLogger(__name__)
 )
 def create_rental_endpoint(
     rental_in: RentalRequest,
+    response: Response,
     idempotency_key: str = Header(
         ..., alias="Idempotency-Key", min_length=1, max_length=128, pattern=r"^\S+$"
     ),
@@ -72,6 +74,8 @@ def create_rental_endpoint(
     existing = find_creation_by_key(db, idempotency_key, request_fingerprint)
     if existing is not None:
         rental, checkout = existing
+        if checkout.status == "PAYMENT_PENDING_RETRY":
+            response.status_code = status.HTTP_202_ACCEPTED
         return RentalCreationResponse(
             rental=_build_rental_response(rental), payment=checkout
         )
@@ -111,6 +115,8 @@ def create_rental_endpoint(
             idempotency_key,
             request_fingerprint,
         )
+        if checkout.status == "PAYMENT_PENDING_RETRY":
+            response.status_code = status.HTTP_202_ACCEPTED
         return RentalCreationResponse(
             rental=_build_rental_response(rental), payment=checkout
         )

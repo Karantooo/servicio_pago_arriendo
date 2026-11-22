@@ -26,6 +26,20 @@ def ensure_saga_delivery_column() -> None:
             )
 
     columns = {column["name"] for column in inspector.get_columns("sagas")}
+    checkout_status = next(
+        (column for column in inspector.get_columns("sagas") if column["name"] == "checkout_status"),
+        None,
+    )
+    if (
+        checkout_status is not None
+        and engine.dialect.name == "postgresql"
+        and getattr(checkout_status["type"], "length", None) is not None
+        and checkout_status["type"].length < 30
+    ):
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE sagas ALTER COLUMN checkout_status TYPE VARCHAR(30)")
+            )
     with engine.begin() as connection:
         if "delivery_scheduled_at" not in columns:
             connection.execute(

@@ -37,6 +37,8 @@ usan los servicios existentes. KrakenD valida el JWT y reenvía `API-Key` al
 backend; no devuelve ese header ni las credenciales en la respuesta. El endpoint
 `/api/rental-summary/{rentalId}` consulta en paralelo Arriendos y Entregas y
 agrupa las respuestas como `rental` y `delivery`.
+El estado de recuperación del pago está disponible en
+`GET /api/rentals/{rentalId}/saga`, también protegido por JWT y API-Key.
 
 La clave de firma incluida en `jwk-symmetric.json` es solo para desarrollo. Debe
 reemplazarse antes de cualquier despliegue compartido o de producción.
