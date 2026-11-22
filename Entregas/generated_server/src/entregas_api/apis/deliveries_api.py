@@ -21,6 +21,8 @@ from fastapi import (  # noqa: F401
     Security,
     status,
 )
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from datetime import datetime
 from pydantic import Field, field_validator
@@ -46,8 +48,50 @@ from entregas_api.models.reschedule_request import RescheduleRequest
 from entregas_api.models.service_unavailable_error import ServiceUnavailableError
 from entregas_api.models.extra_models import TokenModel  # noqa: F401
 from entregas_api.security_api import get_token_APIKeyHeader
+from entregas_api.impl.failure_injection import (
+    is_failure_injection_enabled,
+    set_failure_mode,
+    should_fail_delivery_creation,
+)
 
 router = APIRouter()
+
+
+class FailureInjectionRequest(BaseModel):
+    mode: str
+
+
+@router.post(
+    "/admin/failure-injection",
+    responses={
+        200: {"description": "Modo de inyección de fallas actualizado"},
+        401: {"model": NotAuthorizedError},
+        403: {"model": ForbiddenError},
+        404: {"description": "La inyección de fallas está deshabilitada"},
+    },
+    tags=["Admin"],
+    summary="Configurar inyección controlada de fallas",
+)
+async def configure_failure_injection(
+    request: FailureInjectionRequest,
+    token_APIKeyHeader: TokenModel = Security(get_token_APIKeyHeader),
+) -> Dict[str, str]:
+    if not is_failure_injection_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "FAILURE_INJECTION_DISABLED",
+                "message": "La inyección de fallas está deshabilitada.",
+            },
+        )
+    try:
+        mode = set_failure_mode(request.mode)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "INVALID_FAILURE_MODE", "message": str(exc)},
+        ) from exc
+    return {"status": "ok", "mode": mode}
 
 ns_pkg = entregas_api.impl
 for _, name, _ in pkgutil.iter_modules(ns_pkg.__path__, ns_pkg.__name__ + "."):
@@ -110,6 +154,11 @@ async def create_delivery(
     ),
 ) -> DeliveryResponse:
     """Registra la entrega de un arriendo y la deja agendada (&#x60;SCHEDULED&#x60;) para la fecha indicada. Se llama al momento de realizar el pago. Valida contra Arriendos que: - el arriendo existe y &#x60;clientId&#x60; y &#x60;equipmentId&#x60; coinciden, - el arriendo no está cancelado, finalizado ni fallido, - &#x60;scheduledAt&#x60; es futura y no posterior al &#x60;endDate&#x60; del arriendo, - si &#x60;paymentStatus&#x60; es &#x60;PAID&#x60;, la Saga del arriendo está esperando la Entrega, - no existe ya una entrega para ese arriendo."""
+    if should_fail_delivery_creation():
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"detail": "Simulated delivery failure for testing"},
+        )
     if not BaseDeliveriesApi.subclasses:
         raise HTTPException(status_code=500, detail="Not implemented")
     return await BaseDeliveriesApi.subclasses[0]().create_delivery(idempotency_key, delivery_request)
