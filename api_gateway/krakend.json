@@ -3,12 +3,12 @@
   "version": 4,
   "name": "servicio-pago-arriendo-gateway",
   "port": 8080,
-  "timeout": "3s",
+  "timeout": "5s",
   "max_idle_connections": 100,
   "max_idle_connections_per_host": 20,
   "idle_connection_timeout": "60s",
   "dialer_timeout": "1s",
-  "response_header_timeout": "2s",
+  "response_header_timeout": "4s",
   "cache_ttl": "0s",
   "endpoints": [
     {
@@ -17,7 +17,7 @@
       "output_encoding": "json",
       "backend": [
         {
-          "host": ["http://mock-profile:8080"],
+          "host": ["http://arriendos-api:8080"],
           "url_pattern": "/health",
           "encoding": "json"
         }
@@ -34,25 +34,22 @@
       }
     },
     {
-      "endpoint": "/api/profile",
+      "endpoint": "/api/rentals",
       "method": "GET",
-      "output_encoding": "json",
+      "input_headers": ["API-Key"],
+      "input_query_strings": ["limit", "offset"],
+      "output_encoding": "no-op",
       "backend": [
         {
-          "host": ["http://mock-profile:8080"],
-          "url_pattern": "/profile",
-          "encoding": "json",
+          "host": ["http://arriendos-api:8080"],
+          "url_pattern": "/v2/rentals",
+          "encoding": "no-op",
           "extra_config": {
-            "qos/ratelimit/proxy": {
-              "max_rate": 20,
-              "every": "1s",
-              "capacity": 20
-            },
             "qos/circuit-breaker": {
               "interval": 60,
               "timeout": 10,
               "max_errors": 3,
-              "name": "cb-api-profile",
+              "name": "cb-rentals-list",
               "log_status_change": true
             }
           }
@@ -79,36 +76,62 @@
       }
     },
     {
-      "endpoint": "/api/dashboard",
-      "method": "GET",
-      "output_encoding": "json",
+      "endpoint": "/api/rentals",
+      "method": "POST",
+      "input_headers": ["API-Key", "Content-Type", "Idempotency-Key"],
+      "output_encoding": "no-op",
       "backend": [
         {
-          "host": ["http://mock-profile:8080"],
-          "url_pattern": "/profile",
-          "encoding": "json",
-          "group": "profile",
+          "host": ["http://arriendos-api:8080"],
+          "url_pattern": "/v2/rentals",
+          "encoding": "no-op",
           "extra_config": {
             "qos/circuit-breaker": {
               "interval": 60,
               "timeout": 10,
               "max_errors": 3,
-              "name": "cb-dashboard-profile",
+              "name": "cb-rental-create",
               "log_status_change": true
             }
           }
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["admin"],
+          "roles_key": "roles"
         },
+        "qos/ratelimit/router": {
+          "max_rate": 100,
+          "every": "1s",
+          "capacity": 100,
+          "client_max_rate": 10,
+          "client_capacity": 10,
+          "strategy": "ip"
+        }
+      }
+    },
+    {
+      "endpoint": "/api/rentals/{rentalId}",
+      "method": "GET",
+      "input_headers": ["API-Key"],
+      "output_encoding": "no-op",
+      "backend": [
         {
-          "host": ["http://mock-rentals:8080"],
-          "url_pattern": "/rentals",
-          "encoding": "json",
-          "group": "rentals",
+          "host": ["http://arriendos-api:8080"],
+          "url_pattern": "/v2/rentals/{rentalId}",
+          "encoding": "no-op",
           "extra_config": {
             "qos/circuit-breaker": {
               "interval": 60,
               "timeout": 10,
               "max_errors": 3,
-              "name": "cb-dashboard-rentals",
+              "name": "cb-rental-details",
               "log_status_change": true
             }
           }
@@ -135,20 +158,21 @@
       }
     },
     {
-      "endpoint": "/api/rentals-unstable",
+      "endpoint": "/api/rentals/{rentalId}/delivery",
       "method": "GET",
-      "output_encoding": "json",
+      "input_headers": ["API-Key"],
+      "output_encoding": "no-op",
       "backend": [
         {
-          "host": ["http://mock-rentals:8080"],
-          "url_pattern": "/failure",
-          "encoding": "json",
+          "host": ["http://entregas-api:8081"],
+          "url_pattern": "/v1/rentals/{rentalId}/delivery",
+          "encoding": "no-op",
           "extra_config": {
             "qos/circuit-breaker": {
               "interval": 60,
               "timeout": 10,
               "max_errors": 3,
-              "name": "cb-rentals-unstable",
+              "name": "cb-rental-delivery",
               "log_status_change": true
             }
           }
@@ -163,6 +187,282 @@
           "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
           "roles": ["cliente", "admin"],
           "roles_key": "roles"
+        },
+        "qos/ratelimit/router": {
+          "max_rate": 100,
+          "every": "1s",
+          "capacity": 100,
+          "client_max_rate": 10,
+          "client_capacity": 10,
+          "strategy": "ip"
+        }
+      }
+    },
+    {
+      "endpoint": "/api/deliveries",
+      "method": "POST",
+      "input_headers": ["API-Key", "Content-Type", "Idempotency-Key"],
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": ["http://entregas-api:8081"],
+          "url_pattern": "/v1/deliveries",
+          "encoding": "no-op",
+          "extra_config": {
+            "qos/circuit-breaker": {
+              "interval": 60,
+              "timeout": 10,
+              "max_errors": 3,
+              "name": "cb-delivery-create",
+              "log_status_change": true
+            }
+          }
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["admin"],
+          "roles_key": "roles"
+        },
+        "qos/ratelimit/router": {
+          "max_rate": 100,
+          "every": "1s",
+          "capacity": 100,
+          "client_max_rate": 10,
+          "client_capacity": 10,
+          "strategy": "ip"
+        }
+      }
+    },
+    {
+      "endpoint": "/api/rental-summary/{rentalId}",
+      "method": "GET",
+      "input_headers": ["API-Key"],
+      "output_encoding": "json",
+      "backend": [
+        {
+          "host": ["http://arriendos-api:8080"],
+          "url_pattern": "/v2/rentals/{rentalId}",
+          "encoding": "json",
+          "group": "rental",
+          "extra_config": {
+            "qos/circuit-breaker": {
+              "interval": 60,
+              "timeout": 10,
+              "max_errors": 3,
+              "name": "cb-summary-rental",
+              "log_status_change": true
+            }
+          }
+        },
+        {
+          "host": ["http://entregas-api:8081"],
+          "url_pattern": "/v1/rentals/{rentalId}/delivery",
+          "encoding": "json",
+          "group": "delivery",
+          "extra_config": {
+            "qos/circuit-breaker": {
+              "interval": 60,
+              "timeout": 10,
+              "max_errors": 3,
+              "name": "cb-summary-delivery",
+              "log_status_change": true
+            }
+          }
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["cliente", "admin"],
+          "roles_key": "roles"
+        },
+        "qos/ratelimit/router": {
+          "max_rate": 100,
+          "every": "1s",
+          "capacity": 100,
+          "client_max_rate": 10,
+          "client_capacity": 10,
+          "strategy": "ip"
+        }
+      }
+    },
+    {
+      "endpoint": "/api/payments/charge",
+      "method": "POST",
+      "input_headers": ["Content-Type", "Idempotency-Key", "X-Request-ID"],
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": ["http://payments-api:8003"],
+          "url_pattern": "/payments/charge",
+          "encoding": "no-op",
+          "extra_config": {
+            "qos/circuit-breaker": {
+              "interval": 60,
+              "timeout": 10,
+              "max_errors": 3,
+              "name": "cb-payment-charge",
+              "log_status_change": true
+            }
+          }
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["admin"],
+          "roles_key": "roles"
+        },
+        "qos/ratelimit/router": {
+          "max_rate": 100,
+          "every": "1s",
+          "capacity": 100,
+          "client_max_rate": 10,
+          "client_capacity": 10,
+          "strategy": "ip"
+        }
+      }
+    },
+    {
+      "endpoint": "/api/payments/{payment_id}",
+      "method": "GET",
+      "input_headers": [],
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": ["http://payments-api:8003"],
+          "url_pattern": "/payments/{payment_id}",
+          "encoding": "no-op",
+          "extra_config": {
+            "qos/circuit-breaker": {
+              "interval": 60,
+              "timeout": 10,
+              "max_errors": 3,
+              "name": "cb-payment-details",
+              "log_status_change": true
+            }
+          }
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["admin"],
+          "roles_key": "roles"
+        },
+        "qos/ratelimit/router": {
+          "max_rate": 100,
+          "every": "1s",
+          "capacity": 100,
+          "client_max_rate": 10,
+          "client_capacity": 10,
+          "strategy": "ip"
+        }
+      }
+    },
+    {
+      "endpoint": "/api/payments/{payment_id}/refund",
+      "method": "POST",
+      "input_headers": ["Content-Type", "Idempotency-Key", "X-Request-ID"],
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": ["http://payments-api:8003"],
+          "url_pattern": "/payments/{payment_id}/refund",
+          "encoding": "no-op",
+          "extra_config": {
+            "qos/circuit-breaker": {
+              "interval": 60,
+              "timeout": 10,
+              "max_errors": 3,
+              "name": "cb-payment-refund",
+              "log_status_change": true
+            }
+          }
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["admin"],
+          "roles_key": "roles"
+        },
+        "qos/ratelimit/router": {
+          "max_rate": 100,
+          "every": "1s",
+          "capacity": 100,
+          "client_max_rate": 10,
+          "client_capacity": 10,
+          "strategy": "ip"
+        }
+      }
+    },
+    {
+      "endpoint": "/payments/transbank/return",
+      "method": "GET",
+      "input_headers": [],
+      "input_query_strings": ["token_ws", "TBK_TOKEN", "TBK_ORDEN_COMPRA", "TBK_ID_SESION"],
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": ["http://payments-api:8003"],
+          "url_pattern": "/payments/transbank/return",
+          "encoding": "no-op"
+        }
+      ],
+      "extra_config": {
+        "qos/ratelimit/router": {
+          "max_rate": 20,
+          "every": "1s",
+          "capacity": 20,
+          "client_max_rate": 10,
+          "client_capacity": 10,
+          "strategy": "ip"
+        }
+      }
+    },
+    {
+      "endpoint": "/payments/transbank/return",
+      "method": "POST",
+      "input_headers": ["Content-Type"],
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": ["http://payments-api:8003"],
+          "url_pattern": "/payments/transbank/return",
+          "encoding": "no-op"
+        }
+      ],
+      "extra_config": {
+        "qos/ratelimit/router": {
+          "max_rate": 20,
+          "every": "1s",
+          "capacity": 20,
+          "client_max_rate": 10,
+          "client_capacity": 10,
+          "strategy": "ip"
         }
       }
     }
