@@ -110,7 +110,9 @@ El repositorio incluye el microservicio `pagos` con un contrato `pagos/open-api-
 - El adaptador Transbank usa Webpay Plus en ambiente de integración. Para iniciar el flujo se configura `PAYMENTS_TRANSBANK_RETURN_URL` con una URL de retorno accesible para el navegador.
 - Circuit Breaker: umbral 3 fallos, ventana abierta 15 s.
 - Bulkhead: 5 operaciones simultáneas.
-- Timeout de 5 s entre Pagos y el proveedor (`PAYMENTS_PROVIDER_TIMEOUT_SECONDS`); Arriendos usa `PAYMENTS_TIMEOUT_SECONDS` para sus llamadas al servicio de Pagos.
+- Timeouts en cascada: Transbank usa 1 s (`PAYMENTS_EXTERNAL_TIMEOUT_SECONDS`), Pagos espera hasta 2 s (`PAYMENTS_PROVIDER_TIMEOUT_SECONDS`), Arriendos hasta 3 s (`PAYMENTS_TIMEOUT_SECONDS`) y KrakenD hasta 5 s (`api_gateway/krakend.json`).
+- El Circuit Breaker de Arriendos protege las llamadas a Pagos; el estado `PAYMENT_PENDING_RETRY` queda guardado en la Saga y se consulta en `GET /v2/rentals/{rentalId}/saga`.
+- El Bulkhead ejecuta como máximo cinco llamadas en un `ThreadPoolExecutor` acotado y conserva el cupo hasta que termina la tarea real, incluso si vence el timeout HTTP.
 
 Pagos persiste transacciones, reembolsos y claves de idempotencia en su propia base PostgreSQL (`payments-db`) y volumen (`payments_pg_data`). Los estados `UNKNOWN` se conservan para evitar que un reintento incierto inicie un segundo cobro o reembolso.
 
