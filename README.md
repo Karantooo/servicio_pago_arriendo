@@ -105,7 +105,8 @@ El repositorio incluye el microservicio `pagos` con un contrato `pagos/open-api-
 - `POST /payments/{payment_id}/refund` con compensación idempotente.
 - `GET /payments/{payment_id}` para consulta.
 - `GET /health` para salud del servicio.
-- El proveedor se selecciona con `PAYMENTS_PROVIDER=mock` (predeterminado) o `PAYMENTS_PROVIDER=transbank`. El mock ofrece los modos `NORMAL`, `SLOW` y `DOWN`, modificables en caliente con `POST /payments/mock-provider/mode`.
+- El proveedor se selecciona con `PAYMENTS_PROVIDER=mock` (predeterminado) o `PAYMENTS_PROVIDER=transbank`. El mock ofrece los modos `NORMAL`, `SLOW` y `DOWN`, modificables en caliente con `POST /payments/mock-provider/mode`, protegido por `X-Admin-Key`.
+- Entregas permite inyectar fallas de agendamiento en pruebas. La función está deshabilitada por defecto (`DELIVERIES_ENABLE_FAILURE_INJECTION=false`); actívala en `.env` y recrea el servicio para habilitar el endpoint admin.
 - El adaptador Transbank usa Webpay Plus en ambiente de integración. Para iniciar el flujo se configura `PAYMENTS_TRANSBANK_RETURN_URL` con una URL de retorno accesible para el navegador.
 - Circuit Breaker: umbral 3 fallos, ventana abierta 15 s.
 - Bulkhead: 5 operaciones simultáneas.
@@ -116,10 +117,98 @@ Pagos persiste transacciones, reembolsos y claves de idempotencia en su propia b
 Para levantarlo junto con los otros servicios:
 
 ```bash
-docker compose -f docker-compose.yaml up --build
+docker compose up --build
 ```
 
-La API de pagos queda expuesta en `http://localhost:8003`.
+Solo KrakenD se expone al host en `http://localhost:8080`. Los endpoints
+administrativos siguientes requieren un JWT de prueba con rol `admin`; `TOKEN`
+debe estar definido en el shell.
+
+Para generar un JWT de desarrollo compatible con el JWK local:
+
+```bash
+TOKEN=$(python3 - <<'PY'
+import base64, hashlib, hmac, json
+
+encode = lambda value: base64.urlsafe_b64encode(
+    json.dumps(value, separators=(",", ":")).encode()
+).rstrip(b"=").decode()
+header = encode({"alg": "HS256", "typ": "JWT", "kid": "gateway-test"})
+payload = encode({
+    "iss": "servicio-pago-arriendo-test",
+    "aud": "servicio-pago-arriendo",
+    "sub": "admin-test",
+    "roles": ["admin"],
+})
+unsigned = f"{header}.{payload}".encode()
+secret = b"gateway-test-secret-change-me-32-bytes"
+signature = base64.urlsafe_b64encode(
+    hmac.new(secret, unsigned, hashlib.sha256).digest()
+).rstrip(b"=").decode()
+print(f"{header}.{payload}.{signature}")
+PY
+)
+```
+
+Habilitar la inyección de fallas de Entregas, en `.env`:
+
+```env
+DELIVERIES_ENABLE_FAILURE_INJECTION=true
+```
+
+Recrear Entregas para aplicar la variable:
+
+```bash
+docker compose up -d --force-recreate entregas-api
+```
+
+Activar `FAIL_NEXT` (falla una creación y se restablece automáticamente):
+
+```bash
+curl -i --oauth2-bearer "$TOKEN" \
+  -H "API-Key: apikey_admin" \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"FAIL_NEXT"}' \
+  http://localhost:8080/api/admin/failure-injection
+```
+
+Activar `ALWAYS_FAIL` o volver al modo `NORMAL`:
+
+```bash
+curl -i --oauth2-bearer "$TOKEN" \
+  -H "API-Key: apikey_admin" \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"ALWAYS_FAIL"}' \
+  http://localhost:8080/api/admin/failure-injection
+
+curl -i --oauth2-bearer "$TOKEN" \
+  -H "API-Key: apikey_admin" \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"NORMAL"}' \
+  http://localhost:8080/api/admin/failure-injection
+```
+
+Cambiar el proveedor mock de Pagos requiere `X-Admin-Key`:
+
+```bash
+curl -i --oauth2-bearer "$TOKEN" \
+  -H "X-Admin-Key: apikey_admin" \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"SLOW"}' \
+  http://localhost:8080/api/admin/payments/mock-provider/mode
+
+curl -i --oauth2-bearer "$TOKEN" \
+  -H "X-Admin-Key: apikey_admin" \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"DOWN"}' \
+  http://localhost:8080/api/admin/payments/mock-provider/mode
+
+curl -i --oauth2-bearer "$TOKEN" \
+  -H "X-Admin-Key: apikey_admin" \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"NORMAL"}' \
+  http://localhost:8080/api/admin/payments/mock-provider/mode
+```
 
 # Declaración de uso de inteligencia artificial
 
