@@ -31,7 +31,8 @@ from app.models import (
 )
 from app.redis import RentalCache, get_rental_cache
 from app.pricing import calculate_rental_amounts
-from app.saga_orchestrator import create_rental, find_creation_by_key, finish_rental, reconcile_payment
+from app.saga_orchestrator import create_rental, find_creation_by_key, finish_rental
+from app.saga_recovery import lock_rental_workflow, reconcile_rental
 
 router = APIRouter(prefix="/v2/rentals", tags=["Rentals v2"])
 CACHE_HEADER = "CACHE_STATUS"
@@ -403,9 +404,10 @@ def notify_delivery_status(
                     },
                 )
         elif rental.status in {"PENDING", "ACTIVE"}:
-            rental = finish_rental(
-                db, rentalId, "CANCELLED", cancelled_delivery_id=notification.deliveryId
-            )
+            with lock_rental_workflow(db, rentalId):
+                rental = finish_rental(
+                    db, rentalId, "CANCELLED", cancelled_delivery_id=notification.deliveryId
+                )
         elif rental.status == "CANCELLING":
             cancellation = (
                 db.query(Saga)
@@ -506,7 +508,7 @@ def reconcile_payment_endpoint(
     admin_auth: dict = Depends(admin_validation),
 ) -> SagaResponse:
     try:
-        return _build_saga_response(reconcile_payment(db, rentalId))
+        return _build_saga_response(reconcile_rental(db, rentalId))
     finally:
         cache.invalidate(rentalId)
 
@@ -585,7 +587,8 @@ def _finish_rental_endpoint(
     cache: RentalCache,
 ) -> RentalResponse:
     try:
-        rental = finish_rental(db, rental_id, final_status)
+        with lock_rental_workflow(db, rental_id):
+            rental = finish_rental(db, rental_id, final_status)
         return _build_rental_response(rental)
     finally:
         cache.invalidate(rental_id)

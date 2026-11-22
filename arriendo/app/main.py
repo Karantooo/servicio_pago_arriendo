@@ -14,12 +14,14 @@ from app.routers.v2 import tariffs as tariffs_v2
 from app.database import Base, engine, ensure_rental_reservation_column, ensure_saga_delivery_column
 
 from app.models import HealthResponse
+from app.saga_recovery import saga_recovery_lifespan
 
 Base.metadata.create_all(bind=engine)
 ensure_saga_delivery_column()
 ensure_rental_reservation_column()
     
 app = FastAPI(
+    lifespan=saga_recovery_lifespan,
     title='API ArriendaPro',
     description='API REST para la gestión de arriendos y clientes.',
     version='1.0.0',

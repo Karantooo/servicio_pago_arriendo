@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 
 from pagos.models import utc_now
+from pagos.rentals_client import notify_payment_result
 from pagos.providers import get_provider
 from pagos.providers.base import ProviderUnavailable
 from pagos.resilience import bulkhead, circuit_breaker, invoke_provider_call
@@ -16,28 +17,37 @@ router = APIRouter()
 
 @router.get("/payments/transbank/return")
 async def transbank_return_get(
+    background_tasks: BackgroundTasks,
     token_ws: str | None = Query(default=None),
     TBK_TOKEN: str | None = Query(default=None),
     TBK_ORDEN_COMPRA: str | None = Query(default=None),
     TBK_ID_SESION: str | None = Query(default=None),
 ):
-    return await handle_transbank_return(
+    result = await handle_transbank_return(
         token_ws,
         TBK_TOKEN,
         TBK_ORDEN_COMPRA,
         TBK_ID_SESION,
     )
+    return _notify_rental(result, background_tasks)
 
 
 @router.post("/payments/transbank/return")
-async def transbank_return_post(request: Request):
+async def transbank_return_post(request: Request, background_tasks: BackgroundTasks):
     form = await request.form()
-    return await handle_transbank_return(
+    result = await handle_transbank_return(
         form.get("token_ws"),
         form.get("TBK_TOKEN"),
         form.get("TBK_ORDEN_COMPRA"),
         form.get("TBK_ID_SESION"),
     )
+    return _notify_rental(result, background_tasks)
+
+
+def _notify_rental(result: dict, background_tasks: BackgroundTasks) -> dict:
+    if result["status"] in {"CHARGED", "FAILED"}:
+        background_tasks.add_task(notify_payment_result, result["rental_id"])
+    return result
 
 
 async def handle_transbank_return(
