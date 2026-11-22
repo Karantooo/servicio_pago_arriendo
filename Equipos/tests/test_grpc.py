@@ -622,3 +622,59 @@ def test_reserva_identificada_con_reintentos_concurrentes(grpc_channel, crear_eq
     stub.LiberarEquipoIdentificado(otra_reserva)
     stub.ReservarEquipoIdentificado(reserva)
     assert stub.ConsultarDisponibilidadEquipo(consulta).unidades_disponibles == 1
+
+
+@pytest.mark.parametrize("cantidad", [1, 2])
+def test_reservas_por_periodo(grpc_channel, crear_equipo, cantidad):
+    from datetime import datetime, timedelta, timezone
+    from uuid import uuid4
+
+    crear_equipo(equipo_id=1, cantidad_total=cantidad, unidades_disponibles=cantidad)
+    stub = equipos_pb2_grpc.ServicioEquiposStub(grpc_channel)
+    base = datetime(2030, 1, 1, tzinfo=timezone.utc)
+
+    def solicitud(desde, hasta):
+        request = equipos_pb2.ReservaEquipoRequest(id=1, reserva_id=str(uuid4()))
+        request.inicio.FromDatetime(base + timedelta(hours=desde))
+        request.fin.FromDatetime(base + timedelta(hours=hasta))
+        return request
+
+    candidatos = [solicitud(0, 1) for _ in range(cantidad + 1)]
+    intentos = [
+        stub.ReservarEquipoIdentificado.future(request, timeout=5)
+        for request in candidatos
+    ]
+    confirmadas = []
+    for request, intento in zip(candidatos, intentos):
+        try:
+            intento.result()
+            confirmadas.append(request)
+        except grpc.RpcError as error:
+            assert error.code() == grpc.StatusCode.FAILED_PRECONDITION
+    assert len(confirmadas) == cantidad
+
+    siguiente = solicitud(1, 2)
+    stub.ReservarEquipoIdentificado(siguiente)
+    original = confirmadas[0]
+    stub.ReservarEquipoIdentificado(original)
+    alterada = solicitud(1, 2)
+    alterada.reserva_id = original.reserva_id
+    with pytest.raises(grpc.RpcError) as error:
+        stub.ReservarEquipoIdentificado(alterada)
+    assert error.value.code() == grpc.StatusCode.ALREADY_EXISTS
+
+    sin_fecha = equipos_pb2.EquipoRequest(id=1)
+    with pytest.raises(grpc.RpcError) as error:
+        stub.ReservarEquipo(sin_fecha)
+    assert error.value.code() == grpc.StatusCode.FAILED_PRECONDITION
+
+    liberar = equipos_pb2.ReservaEquipoRequest(id=1, reserva_id=original.reserva_id)
+    stub.LiberarEquipoIdentificado(liberar)
+    stub.LiberarEquipoIdentificado(liberar)
+    assert stub.ConsultarDisponibilidadEquipo(sin_fecha).unidades_disponibles == cantidad
+
+    if cantidad == 2:
+        # Hay dos reservas que intersectan el nuevo intervalo, pero nunca entre sí.
+        stub.ReservarEquipoIdentificado(solicitud(0, 2))
+    else:
+        stub.ReservarEquipoIdentificado(solicitud(0, 1))

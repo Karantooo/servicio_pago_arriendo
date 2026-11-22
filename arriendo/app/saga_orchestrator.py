@@ -147,7 +147,9 @@ def create_rental(
     db.refresh(rental)
 
     try:
-        grpc_client.reservar_unidad(equipment_id, rental.equipment_reservation_id)
+        grpc_client.reservar_unidad(
+            equipment_id, saga_id, start_date=start_date, end_date=end_date
+        )
     except HTTPException as error:
         _record_remote_failure(db, saga.id, rental.id, error)
         raise
@@ -975,7 +977,9 @@ def _compensate_finish(
         if rental.equipment_reservation_id is None:
             grpc_client.reservar_unidad(equipment_id)
         else:
-            grpc_client.reservar_unidad(equipment_id, saga_id)
+            grpc_client.reservar_unidad(
+                equipment_id, saga_id, start_date=rental.start_date, end_date=rental.end_date
+            )
             rental.equipment_reservation_id = saga_id
     except HTTPException as compensation_error:
         _record_compensation_failure(

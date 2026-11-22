@@ -85,6 +85,8 @@ Si Entregas rechaza el agendamiento después de cobrar, Arriendos ejecuta las co
 
 Entregas consulta arriendos y Sagas con la API Key de administrador. Al registrar el retiro, llama `PUT /v2/rentals/{rentalId}/delivery-status` para activar el arriendo; una cancelación notifica el mismo endpoint y cancela el arriendo liberando la unidad mediante una Saga. Las notificaciones se deduplican por `deliveryId` y estado. Los estados `IN_DOUBT` y `COMPENSATION_FAILED` requieren revisión: la llamada remota pudo haber tenido éxito aunque la respuesta o la compensación no se hayan confirmado. Los arriendos v2 nuevos usan una identidad de reserva persistida para los comandos gRPC de Equipos. Repetir la reserva o la liberación con esa identidad no vuelve a modificar el stock. Los arriendos creados antes del cambio conservan la liberación por ID de equipo. La conciliación sigue siendo manual.
 
+Los arriendos v2 nuevos reservan el equipo para el intervalo `[startDate, endDate)`. Equipos serializa las nuevas reservas por equipo y compara su ocupación simultánea con la capacidad disponible. Dos arriendos pueden compartir la misma unidad si sus períodos no se solapan. Las reservas antiguas sin fechas y las de v1 siguen consumiendo una unidad global, y se descuentan de la capacidad para todos los intervalos. Las consultas de catálogo de Equipos siguen mostrando el contador global.
+
 ## Servicio de Pagos y resiliencia
 
 El repositorio incluye el microservicio `pagos` con un contrato `pagos/open-api-pagos_transbank.yaml`

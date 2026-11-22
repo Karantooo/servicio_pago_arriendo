@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from typing import NoReturn
 
 import grpc
@@ -142,14 +143,28 @@ def _raise_grpc_error(
     ) from error
 
 
-def reservar_unidad(equipment_id: int, reservation_id: str | None = None) -> None:
+def reservar_unidad(
+    equipment_id: int,
+    reservation_id: str | None = None,
+    *,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+) -> None:
     stub = get_grpc_stub()
     request = equipos_pb2.EquipoRequest(id=equipment_id)
 
     try:
         if reservation_id is not None:
+            reserva = equipos_pb2.ReservaEquipoRequest(id=equipment_id, reserva_id=reservation_id)
+            if start_date is not None and end_date is not None:
+                if start_date.tzinfo is None:
+                    start_date = start_date.replace(tzinfo=timezone.utc)
+                if end_date.tzinfo is None:
+                    end_date = end_date.replace(tzinfo=timezone.utc)
+                reserva.inicio.FromDatetime(start_date)
+                reserva.fin.FromDatetime(end_date)
             stub.ReservarEquipoIdentificado(
-                equipos_pb2.ReservaEquipoRequest(id=equipment_id, reserva_id=reservation_id),
+                reserva,
                 timeout=GRPC_TIMEOUT_SECONDS,
             )
             return

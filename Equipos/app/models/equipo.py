@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.models.base import Base
-from sqlalchemy import Boolean, CheckConstraint, DateTime, String, Text, func, update
+from sqlalchemy import Boolean, CheckConstraint, DateTime, String, Text, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
@@ -69,6 +69,8 @@ class ReservaEquipo(Base):
 
     reserva_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     equipo_id: Mapped[int] = mapped_column(nullable=False)
+    inicio: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fin: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     liberada: Mapped[bool] = mapped_column(nullable=False, default=False)
 
 
@@ -76,7 +78,52 @@ class ReservaEquipoEnConflicto(Exception):
     pass
 
 
+def _utc(fecha: datetime | None) -> datetime | None:
+    if fecha is not None and fecha.tzinfo is None:
+        return fecha.replace(tzinfo=timezone.utc)
+    return fecha
+
+
+def _hay_capacidad(
+    db: Session, equipo_id: int, inicio: datetime | None = None, fin: datetime | None = None,
+    excluir_reserva: str | None = None,
+) -> bool:
+    # Serializa las admisiones para este equipo hasta el commit o rollback.
+    equipo = db.execute(
+        select(Equipo).where(Equipo.equipo_id == equipo_id, Equipo.activo.is_(True))
+        .with_for_update()
+    ).scalar_one_or_none()
+    if equipo is None or equipo.unidades_disponibles == 0:
+        return False
+
+    reservas = select(ReservaEquipo.inicio, ReservaEquipo.fin).where(
+        ReservaEquipo.equipo_id == equipo_id,
+        ReservaEquipo.liberada.is_(False),
+        ReservaEquipo.inicio.is_not(None),
+        ReservaEquipo.fin.is_not(None),
+    )
+    if excluir_reserva is not None:
+        reservas = reservas.where(ReservaEquipo.reserva_id != excluir_reserva)
+    if inicio is not None and fin is not None:
+        reservas = reservas.where(ReservaEquipo.inicio < fin, ReservaEquipo.fin > inicio)
+
+    # Los fines (-1) se procesan antes que los inicios (+1) en el mismo instante.
+    eventos = []
+    for desde, hasta in db.execute(reservas):
+        desde, hasta = _utc(desde), _utc(hasta)
+        eventos.extend(((desde, 1), (hasta, -1)))
+
+    ocupadas = 0
+    for _, cambio in sorted(eventos):
+        ocupadas += cambio
+        if ocupadas >= equipo.unidades_disponibles:
+            return False
+    return True
+
+
 def _descontar_unidad(db: Session, equipo_id: int) -> bool:
+    if not _hay_capacidad(db, equipo_id):
+        return False
     stmt = (
         update(Equipo)
         .where(
@@ -121,22 +168,34 @@ def liberar_equipo(db: Session, equipo_id: int) -> bool:
     return liberado
 
 
-def reservar_equipo_identificado(db: Session, equipo_id: int, reserva_id: str) -> bool:
+def reservar_equipo_identificado(
+    db: Session,
+    equipo_id: int,
+    reserva_id: str,
+    inicio: datetime | None = None,
+    fin: datetime | None = None,
+) -> bool:
     creada = db.execute(
         insert(ReservaEquipo)
-        .values(reserva_id=reserva_id, equipo_id=equipo_id, liberada=False)
+        .values(reserva_id=reserva_id, equipo_id=equipo_id, inicio=inicio, fin=fin, liberada=False)
         .on_conflict_do_nothing(index_elements=[ReservaEquipo.reserva_id])
         .returning(ReservaEquipo.reserva_id)
     ).scalar_one_or_none()
 
     if creada is None:
         existente = db.get(ReservaEquipo, reserva_id)
-        if existente.equipo_id != equipo_id:
+        if (existente.equipo_id, _utc(existente.inicio), _utc(existente.fin)) != (
+            equipo_id, inicio, fin
+        ):
             raise ReservaEquipoEnConflicto
         # Conservar el historial evita que un reintento tardío reactive la reserva.
         return True
 
-    if not _descontar_unidad(db, equipo_id):
+    if inicio is None:
+        reservada = _descontar_unidad(db, equipo_id)
+    else:
+        reservada = _hay_capacidad(db, equipo_id, inicio, fin, excluir_reserva=reserva_id)
+    if not reservada:
         db.rollback()
         return False
 
@@ -153,7 +212,7 @@ def liberar_equipo_identificado(db: Session, equipo_id: int, reserva_id: str) ->
     if reserva.liberada:
         return True
 
-    if not _devolver_unidad(db, equipo_id, solo_activo=False):
+    if reserva.inicio is None and not _devolver_unidad(db, equipo_id, solo_activo=False):
         db.rollback()
         return False
 

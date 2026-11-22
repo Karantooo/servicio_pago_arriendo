@@ -8,6 +8,7 @@ from app.models.equipo import (
     reservar_equipo,
     reservar_equipo_identificado,
 )
+from datetime import timezone
 from uuid import UUID
 from generated import equipos_pb2, equipos_pb2_grpc
 from sqlalchemy.orm.exc import MultipleResultsFound, NoResultFound
@@ -163,8 +164,19 @@ class ServicioEquipos(equipos_pb2_grpc.ServicioEquiposServicer):
         return empty_pb2.Empty()
 
     def ReservarEquipoIdentificado(self, request, context):
+        inicio = fin = None
+        if request.HasField("inicio") or request.HasField("fin"):
+            if not (request.HasField("inicio") and request.HasField("fin")):
+                context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Indique inicio y fin.")
+            try:
+                inicio = request.inicio.ToDatetime(tzinfo=timezone.utc)
+                fin = request.fin.ToDatetime(tzinfo=timezone.utc)
+            except (ValueError, OverflowError):
+                context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Intervalo inválido.")
+            if inicio >= fin:
+                context.abort(grpc.StatusCode.INVALID_ARGUMENT, "El fin debe ser posterior al inicio.")
         return self._ejecutar_reserva_identificada(
-            request, context, reservar_equipo_identificado, "reservar"
+            request, context, reservar_equipo_identificado, "reservar", inicio, fin
         )
 
     def LiberarEquipoIdentificado(self, request, context):
@@ -172,7 +184,7 @@ class ServicioEquipos(equipos_pb2_grpc.ServicioEquiposServicer):
             request, context, liberar_equipo_identificado, "liberar"
         )
 
-    def _ejecutar_reserva_identificada(self, request, context, operacion, accion):
+    def _ejecutar_reserva_identificada(self, request, context, operacion, accion, *args):
         try:
             reserva_id = str(UUID(request.reserva_id))
         except ValueError:
@@ -182,9 +194,9 @@ class ServicioEquipos(equipos_pb2_grpc.ServicioEquiposServicer):
 
         try:
             with SessionLocal() as db:
-                completada = operacion(db, request.id, reserva_id)
+                completada = operacion(db, request.id, reserva_id, *args)
         except ReservaEquipoEnConflicto:
-            context.abort(grpc.StatusCode.ALREADY_EXISTS, "La reserva pertenece a otro equipo.")
+            context.abort(grpc.StatusCode.ALREADY_EXISTS, "La reserva ya existe con otros datos.")
         except LookupError:
             context.abort(grpc.StatusCode.NOT_FOUND, "La reserva no existe.")
         except Exception:
