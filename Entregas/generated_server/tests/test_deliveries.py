@@ -71,6 +71,84 @@ def test_health_and_role_based_auth(client, monkeypatch):
     assert denied.status_code == 403
 
 
+def test_failure_injection_is_disabled_by_default(client, monkeypatch):
+    response = client.post(
+        "/admin/failure-injection",
+        headers=ADMIN_HEADERS,
+        json={"mode": "ALWAYS_FAIL"},
+    )
+    assert response.status_code == 404
+    assert response.json()["code"] == "FAILURE_INJECTION_DISABLED"
+
+
+def test_failure_injection_requires_admin_key(client, monkeypatch):
+    monkeypatch.setenv("DELIVERIES_ENABLE_FAILURE_INJECTION", "true")
+    missing_key = client.post(
+        "/admin/failure-injection",
+        json={"mode": "FAIL_NEXT"},
+    )
+    denied = client.post(
+        "/admin/failure-injection",
+        headers=READONLY_HEADERS,
+        json={"mode": "FAIL_NEXT"},
+    )
+    assert missing_key.status_code == 401
+    assert denied.status_code == 403
+
+
+def test_failure_injection_rejects_unknown_mode(client, monkeypatch):
+    monkeypatch.setenv("DELIVERIES_ENABLE_FAILURE_INJECTION", "true")
+    response = client.post(
+        "/admin/failure-injection",
+        headers=ADMIN_HEADERS,
+        json={"mode": "SOMETIMES_FAIL"},
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_FAILURE_MODE"
+
+
+def test_fail_next_returns_503_then_resets_to_normal(client, monkeypatch, caplog):
+    monkeypatch.setenv("DELIVERIES_ENABLE_FAILURE_INJECTION", "true")
+    _mock_get_rental(monkeypatch)
+    configured = client.post(
+        "/admin/failure-injection",
+        headers=ADMIN_HEADERS,
+        json={"mode": "FAIL_NEXT"},
+    )
+    assert configured.status_code == 200
+    assert configured.json()["mode"] == "FAIL_NEXT"
+
+    failed = _create(client, key="fail-once")
+    assert failed.status_code == 503
+    assert failed.json() == {"detail": "Simulated delivery failure for testing"}
+    assert "Simulated delivery failure injected" in caplog.text
+
+    created = _create(client, key="succeeds-after-failure")
+    assert created.status_code == 201
+    assert created.json()["status"] == "SCHEDULED"
+
+
+def test_always_fail_can_be_disabled_with_normal(client, monkeypatch):
+    monkeypatch.setenv("DELIVERIES_ENABLE_FAILURE_INJECTION", "true")
+    _mock_get_rental(monkeypatch)
+    configured = client.post(
+        "/admin/failure-injection",
+        headers=ADMIN_HEADERS,
+        json={"mode": "ALWAYS_FAIL"},
+    )
+    assert configured.status_code == 200
+    assert _create(client, key="always-fails-1").status_code == 503
+    assert _create(client, key="always-fails-2").status_code == 503
+
+    reset = client.post(
+        "/admin/failure-injection",
+        headers=ADMIN_HEADERS,
+        json={"mode": "NORMAL"},
+    )
+    assert reset.status_code == 200
+    assert _create(client, key="normal-again").status_code == 201
+
+
 def test_create_checks_rental_and_is_idempotent(client, monkeypatch):
     _mock_get_rental(monkeypatch)
     original_request = _payload()
