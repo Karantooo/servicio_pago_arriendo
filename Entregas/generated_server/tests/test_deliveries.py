@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi import HTTPException, status
 
 
@@ -113,14 +114,18 @@ def test_paid_delivery_requires_ready_creation_saga(client, monkeypatch):
     assert response.json()["code"] == "RENTAL_NOT_READY_FOR_DELIVERY"
 
 
-def test_paid_delivery_accepts_waiting_for_delivery_saga(client, monkeypatch):
+@pytest.mark.parametrize(("status", "step"), [
+    ("IN_PROGRESS", "WAITING_FOR_DELIVERY"),
+    ("IN_DOUBT", "DELIVERY_SCHEDULING_IN_DOUBT"),
+])
+def test_paid_delivery_accepts_pending_scheduling(client, monkeypatch, status, step):
     _mock_get_rental(monkeypatch)
 
     async def get_saga(self, rental_id):
         return {
             "operation": "CREATE",
-            "status": "IN_PROGRESS",
-            "currentStep": "WAITING_FOR_DELIVERY",
+            "status": status,
+            "currentStep": step,
         }
 
     monkeypatch.setattr("entregas_api.rentals_client.RentalsClient.get_saga", get_saga)

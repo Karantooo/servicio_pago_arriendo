@@ -67,12 +67,13 @@ def agendar_entrega(
     rental_id: int,
     client_id: int,
     equipment_id: int,
-    start_date: datetime,
-    end_date: datetime,
+    scheduled_at: datetime,
     payment_id: int,
     idempotency_key: str,
 ) -> ScheduledDelivery:
-    scheduled_at = scheduled_at_for_rental(start_date, end_date)
+    if scheduled_at.tzinfo is None:
+        scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+    scheduled_at = scheduled_at.astimezone(timezone.utc)
 
     try:
         response = httpx.post(
@@ -95,6 +96,16 @@ def agendar_entrega(
         raise DeliverySchedulingUncertain(
             "No se recibió una respuesta de Entregas."
         ) from error
+
+    if response.status_code == 409 and _delivery_error_code(response) in {
+        "IDEMPOTENCY_KEY_REUSED",
+        "IDEMPOTENCY_IN_PROGRESS",
+        "DELIVERY_ALREADY_EXISTS",
+        "RENTAL_NOT_READY_FOR_DELIVERY",
+    }:
+        raise DeliverySchedulingUncertain(
+            _delivery_error_message(response, "El estado de la entrega requiere conciliación.")
+        )
 
     if response.status_code in {400, 409}:
         raise DeliverySchedulingRejected(
@@ -169,3 +180,16 @@ def _delivery_error_message(response: httpx.Response, fallback: str) -> str:
     except ValueError:
         pass
     return fallback
+
+
+def _delivery_error_code(response: httpx.Response) -> str | None:
+    try:
+        data = response.json()
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    detail = data.get("detail")
+    if isinstance(detail, dict):
+        return detail.get("code")
+    return data.get("code")

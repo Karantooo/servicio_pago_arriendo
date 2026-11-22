@@ -27,6 +27,10 @@ def ensure_saga_delivery_column() -> None:
 
     columns = {column["name"] for column in inspector.get_columns("sagas")}
     with engine.begin() as connection:
+        if "delivery_scheduled_at" not in columns:
+            connection.execute(
+                text("ALTER TABLE sagas ADD COLUMN delivery_scheduled_at TIMESTAMP WITH TIME ZONE")
+            )
         if "refund_id" not in columns:
             connection.execute(
                 text("ALTER TABLE sagas ADD COLUMN refund_id BIGINT")

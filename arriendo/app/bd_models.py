@@ -53,6 +53,7 @@ class Saga(Base):
     request_fingerprint = Column(String(64), nullable=True)
     payment_id = Column(BigInteger, nullable=True)
     delivery_id = Column(BigInteger, nullable=True)
+    delivery_scheduled_at = Column(DateTime(timezone=True), nullable=True)
     refund_id = Column(BigInteger, nullable=True)
     refund_status = Column(String(20), nullable=True)
     equipment_release_status = Column(String(20), nullable=True)

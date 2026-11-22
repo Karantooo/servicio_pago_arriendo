@@ -144,12 +144,13 @@ def _rental_is_ready(rental: dict[str, Any], request: DeliveryRequest) -> dateti
 
 
 def _validate_paid_saga(saga: dict[str, Any]) -> None:
-    if (
-        saga.get("operation") != "CREATE"
-        or saga.get("status") not in {"IN_PROGRESS", "COMPLETED"}
-        or saga.get("currentStep")
-        not in {"PAYMENT_CONFIRMED", "WAITING_FOR_DELIVERY"}
-    ):
+    step = saga.get("currentStep")
+    status = saga.get("status")
+    ready = (
+        status in {"IN_PROGRESS", "COMPLETED"}
+        and step in {"PAYMENT_CONFIRMED", "WAITING_FOR_DELIVERY"}
+    ) or (status == "IN_DOUBT" and step == "DELIVERY_SCHEDULING_IN_DOUBT")
+    if saga.get("operation") != "CREATE" or not ready:
         raise _conflict(
             "RENTAL_NOT_READY_FOR_DELIVERY",
             "La Saga del arriendo no está esperando la entrega.",

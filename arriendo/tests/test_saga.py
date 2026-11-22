@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import pytest
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
@@ -11,8 +13,8 @@ from app.payments_client import PaymentLookupUncertain, PaymentStartRejected, Pa
 PAYLOAD = {
     "clientId": 1,
     "equipmentId": 50,
-    "startDate": "2026-09-20T10:00:00Z",
-    "endDate": "2026-09-25T18:00:00Z",
+    "startDate": "2099-09-20T10:00:00Z",
+    "endDate": "2099-09-25T18:00:00Z",
 }
 IDEMPOTENCY_HEADERS = {"Idempotency-Key": "rental-create-1"}
 
@@ -171,7 +173,7 @@ def test_v2_reused_key_with_different_body_is_conflict(client, db_session, monke
     first = client.post("/v2/rentals", json=payload, headers=IDEMPOTENCY_HEADERS)
     changed = client.post(
         "/v2/rentals",
-        json={**payload, "endDate": "2026-09-26T18:00:00Z"},
+        json={**payload, "endDate": "2099-09-26T18:00:00Z"},
         headers=IDEMPOTENCY_HEADERS,
     )
 
@@ -446,6 +448,64 @@ def test_reconcile_confirmed_payment_schedules_delivery(client, db_session, monk
     assert delivery_calls[0]["payment_id"] == 501
     assert delivery_calls[0]["idempotency_key"] == IDEMPOTENCY_HEADERS["Idempotency-Key"]
     assert db_session.get(Rental, rental_id).status == "PENDING"
+
+
+def test_reconcile_resumes_paid_delivery_and_reuses_schedule(client, db_session, monkeypatch):
+    from app import saga_orchestrator
+    from app.delivery_client import DeliverySchedulingUncertain, ScheduledDelivery
+
+    client_id = _create_client(client)
+    _create_tariff(client)
+    monkeypatch.setattr(saga_orchestrator.grpc_client, "reservar_unidad", lambda *_, **__: None)
+    monkeypatch.setattr(
+        saga_orchestrator, "iniciar_cobro",
+        lambda **_: PaymentCheckout(
+            paymentId=501, status="PENDING",
+            redirectUrl="https://webpay.example/pagar", token="token-501",
+        ),
+    )
+    created = client.post(
+        "/v2/rentals", json={**PAYLOAD, "clientId": client_id}, headers=IDEMPOTENCY_HEADERS
+    )
+    assert created.status_code == 201
+    rental_id = created.json()["rental"]["id"]
+    saga = db_session.query(Saga).one()
+    saga.current_step = "PAYMENT_CONFIRMED"
+    saga.checkout_status = "CHARGED"
+    db_session.commit()
+
+    refund = []
+    monkeypatch.setattr(saga_orchestrator, "reembolsar_pago", lambda **kwargs: refund.append(kwargs))
+    schedule = datetime(2099, 9, 20, 10, tzinfo=timezone.utc)
+    chosen = []
+    monkeypatch.setattr(
+        saga_orchestrator, "scheduled_at_for_rental",
+        lambda *_: chosen.append(schedule) or schedule,
+    )
+    requests = []
+
+    def attempt(**request):
+        # SQLite devuelve datetimes sin zona. El cliente gRPC/HTTP los interpreta en UTC.
+        requests.append({**request, "scheduled_at": request["scheduled_at"].replace(tzinfo=timezone.utc)})
+        if len(requests) == 1:
+            raise DeliverySchedulingUncertain("Se perdió la respuesta.")
+        return ScheduledDelivery(delivery_id=701, status="SCHEDULED")
+
+    monkeypatch.setattr(saga_orchestrator, "agendar_entrega", attempt)
+    url = f"/v2/rentals/{rental_id}/reconcile-payment"
+    assert client.post(url).status_code == 503
+    db_session.refresh(saga)
+    assert saga.current_step == "DELIVERY_SCHEDULING_IN_DOUBT"
+
+    recovered = client.post(url)
+    assert recovered.status_code == 200
+    assert recovered.json()["deliveryId"] == 701
+    assert recovered.json()["currentStep"] == "DELIVERY_SCHEDULED"
+    assert client.post(url).json()["deliveryId"] == 701
+    assert len(requests) == 2 and requests[0] == requests[1]
+    assert requests[0]["scheduled_at"] == schedule
+    assert chosen == [schedule]
+    assert refund == []
 
 
 def test_confirmed_charge_schedules_delivery(client, db_session, monkeypatch):
