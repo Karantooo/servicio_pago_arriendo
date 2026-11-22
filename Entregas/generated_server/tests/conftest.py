@@ -19,6 +19,16 @@ def reset_database():
     Base.metadata.drop_all(bind=engine)
 
 
+@pytest.fixture(autouse=True)
+def reset_failure_injection(monkeypatch):
+    monkeypatch.setenv("DELIVERIES_ENABLE_FAILURE_INJECTION", "false")
+    from entregas_api.impl.failure_injection import set_failure_mode
+
+    set_failure_mode("NORMAL")
+    yield
+    set_failure_mode("NORMAL")
+
+
 @pytest.fixture
 def client():
     with TestClient(app) as test_client:
