@@ -19,6 +19,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from entregas_api.observability import configure_json_logging, install_observability
+
+configure_json_logging()
+
 from entregas_api.apis.deliveries_api import router as DeliveriesApiRouter
 from entregas_api.apis.health_api import router as HealthApiRouter
 from entregas_api.database import Base, engine
@@ -36,6 +40,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+install_observability(app)
 
 app.include_router(DeliveriesApiRouter)
 app.include_router(HealthApiRouter)

@@ -46,6 +46,10 @@ def should_fail_delivery_creation() -> bool:
 
     logger.warning(
         "Simulated delivery failure injected",
-        extra={"failure_mode": mode, "operation": "create_delivery"},
+        extra={
+            "event": "simulated_delivery_failure",
+            "duration_ms": 0.0,
+            "details": {"failure_mode": mode, "operation": "create_delivery"},
+        },
     )
     return True

@@ -1,9 +1,12 @@
 import os
+from time import perf_counter
 from datetime import datetime
 from typing import Any
 
 import httpx
 from fastapi import HTTPException, status
+
+from entregas_api.observability import request_id_context
 
 
 def _raise_rentals_error(
@@ -63,20 +66,41 @@ class RentalsClient:
         notification: bool = False,
     ) -> dict[str, Any]:
         try:
+            started = perf_counter()
+            headers = {"API-Key": self.api_key}
+            request_id = request_id_context.get()
+            if request_id:
+                headers["X-Request-ID"] = request_id
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.request(
                     method,
                     f"{self.base_url}{path}",
-                    headers={"API-Key": self.api_key},
+                    headers=headers,
                     json=json,
                 )
-        except httpx.TimeoutException:
+        except httpx.TimeoutException as error:
+            logger.warning(
+                "Rentals API request timed out",
+                extra={
+                    "event": "rentals_api_request_timeout",
+                    "duration_ms": round((perf_counter() - started) * 1000, 3),
+                    "details": {"method": method, "path": path, "error": str(error)},
+                },
+            )
             _raise_rentals_error(
                 status.HTTP_504_GATEWAY_TIMEOUT,
                 "RENTALS_SERVICE_TIMEOUT",
                 "Tiempo de espera agotado al comunicar con Arriendos.",
             )
-        except httpx.RequestError:
+        except httpx.RequestError as error:
+            logger.warning(
+                "Rentals API request failed",
+                extra={
+                    "event": "rentals_api_request_failed",
+                    "duration_ms": round((perf_counter() - started) * 1000, 3),
+                    "details": {"method": method, "path": path, "error": str(error)},
+                },
+            )
             _raise_rentals_error(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
                 "RENTALS_SERVICE_UNAVAILABLE",

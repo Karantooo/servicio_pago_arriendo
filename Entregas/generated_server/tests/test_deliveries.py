@@ -71,6 +71,19 @@ def test_health_and_role_based_auth(client, monkeypatch):
     assert denied.status_code == 403
 
 
+def test_metrics_endpoint_exports_request_latency_and_propagates_request_id(client):
+    response = client.get(
+        "/health",
+        headers={"X-Request-ID": "entregas-load-29"},
+    )
+    metrics = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"] == "entregas-load-29"
+    assert metrics.status_code == 200
+    assert 'http_request_duration_seconds_count{endpoint="GET /health",service="entregas-api",status_code="200"}' in metrics.text
+
+
 def test_failure_injection_is_disabled_by_default(client, monkeypatch):
     response = client.post(
         "/admin/failure-injection",

@@ -114,7 +114,13 @@ def _commit(db: Session, message: str) -> None:
         db.commit()
     except SQLAlchemyError as error:
         db.rollback()
-        logger.exception("%s", message)
+        logger.exception(
+            message,
+            extra={
+                "event": "delivery_persistence_failed",
+                "details": {"operation": "commit"},
+            },
+        )
         raise _http_error(
             "DELIVERY_PERSISTENCE_ERROR",
             "No se pudo guardar el estado de la entrega.",
@@ -305,7 +311,15 @@ class DeliveriesApi(BaseDeliveriesApi):
                 ) from error
             except SQLAlchemyError as error:
                 db.rollback()
-                logger.exception("No se pudo crear la entrega.")
+                logger.exception(
+                    "No se pudo crear la entrega.",
+                    extra={
+                        "event": "delivery_creation_persistence_failed",
+                        "details": {
+                            "rental_id": delivery_request.rental_id,
+                        },
+                    },
+                )
                 raise _http_error(
                     "DELIVERY_PERSISTENCE_ERROR",
                     "No se pudo guardar el estado de la entrega.",
