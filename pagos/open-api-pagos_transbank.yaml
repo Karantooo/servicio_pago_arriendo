@@ -25,8 +25,70 @@ tags:
     description: Operaciones relacionadas con Webpay Plus.
   - name: Health
     description: Verificación de disponibilidad del microservicio.
+  - name: Admin
+    description: Controles administrativos de proveedores simulados.
 
 paths:
+
+  /payments/mock-provider/mode:
+    post:
+      tags:
+        - Admin
+      summary: Cambiar el modo del proveedor de pagos simulado
+      description: |
+        Cambia en caliente el modo del proveedor mock.
+        Requiere la API Key administrativa mediante el header X-Admin-Key.
+      operationId: setMockProviderMode
+      security:
+        - AdminKeyHeader: []
+      parameters:
+        - name: X-Admin-Key
+          in: header
+          required: true
+          description: API Key administrativa configurada como ADMIN_API_KEY.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - mode
+              properties:
+                mode:
+                  type: string
+                  enum:
+                    - NORMAL
+                    - SLOW
+                    - DOWN
+                  example: NORMAL
+      responses:
+        "200":
+          description: Modo actualizado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  mode:
+                    type: string
+                    enum:
+                      - NORMAL
+                      - SLOW
+                      - DOWN
+        "401":
+          description: Header X-Admin-Key ausente
+        "403":
+          description: API Key administrativa inválida
+        "409":
+          description: El proveedor configurado no es el mock
+        "503":
+          description: La autenticación administrativa no está configurada
 
   # ==========================================
   # 1. INICIAR UN COBRO
@@ -580,6 +642,11 @@ paths:
 # ==========================================
 
 components:
+  securitySchemes:
+    AdminKeyHeader:
+      type: apiKey
+      in: header
+      name: X-Admin-Key
   schemas:
 
     # --------------------------------------
