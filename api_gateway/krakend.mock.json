@@ -165,6 +165,41 @@
           "roles_key": "roles"
         }
       }
+    },
+    {
+      "endpoint": "/api/rentals-slow",
+      "method": "GET",
+      "output_encoding": "json",
+      "backend": [
+        {
+          "host": ["http://mock-rentals:8080"],
+          "url_pattern": "/slow",
+          "encoding": "json"
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["cliente", "admin"],
+          "roles_key": "roles"
+        }
+      }
+    },
+    {
+      "endpoint": "/__test/rentals-failure-count",
+      "method": "GET",
+      "output_encoding": "json",
+      "backend": [
+        {
+          "host": ["http://mock-rentals:8080"],
+          "url_pattern": "/test/failure-count",
+          "encoding": "json"
+        }
+      ]
     }
   ]
 }

@@ -89,3 +89,23 @@ curl -i -H "API-Key: apikey_cliente" \
 
 El límite de las rutas protegidas es de 10 solicitudes por segundo por IP
 (además del límite global definido en `krakend.json`).
+
+## Pruebas de fallas del gateway
+
+Las pruebas usan únicamente el Compose mock, un JWT de desarrollo y el puerto
+8082; no cargan `.env` ni llaman a los servicios reales. Desde la raíz del
+repositorio, inicia un entorno limpio:
+
+```powershell
+$env:KRAKEND_PORT = "8082"
+docker compose -p gateway-failure-tests -f api_gateway/docker-compose.gateway.yml down --remove-orphans
+docker compose -p gateway-failure-tests -f api_gateway/docker-compose.gateway.yml up -d --build
+python -m unittest discover -s api_gateway/tests -p "test_gateway_*.py" -v
+docker compose -p gateway-failure-tests -f api_gateway/docker-compose.gateway.yml down --remove-orphans
+```
+
+Los casos verifican un backend que responde 503 y la apertura del circuit breaker,
+el timeout frente a un backend lento y el rate limit ante un pico de
+solicitudes. Con `max_errors: 3`, el circuito abre tras cuatro respuestas de
+fallo; por ello, ejecuta la suite
+contra un Compose recién iniciado.
