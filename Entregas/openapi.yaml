@@ -10,6 +10,8 @@ servers:
 - url: http://localhost:8081
   description: Entorno local (Docker Compose)
 tags:
+- name: Admin
+  description: Controles administrativos de pruebas
 - name: Deliveries
   description: Agendamiento y entrega de arriendos
 - name: Health
@@ -33,6 +35,56 @@ x-arriendos-dependencies:
   headers:
   - API-Key (rol admin, configurado por variable de entorno)
 paths:
+  /admin/failure-injection:
+    post:
+      tags:
+      - Admin
+      summary: Configurar fallas simuladas de agendamiento
+      description: |-
+        Activa o desactiva fallas simuladas al agendar entregas.
+        Solo está disponible si DELIVERIES_ENABLE_FAILURE_INJECTION=true.
+        Requiere API Key de administrador.
+      operationId: configureFailureInjection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - mode
+              properties:
+                mode:
+                  type: string
+                  enum:
+                  - NORMAL
+                  - FAIL_NEXT
+                  - ALWAYS_FAIL
+      responses:
+        '200':
+          description: Modo de inyección actualizado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  mode:
+                    type: string
+                    enum:
+                    - NORMAL
+                    - FAIL_NEXT
+                    - ALWAYS_FAIL
+        '400':
+          description: Modo de falla no válido
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ForbiddenAdmin'
+        '404':
+          description: La inyección de fallas está deshabilitada
   /health:
     get:
       security: []
@@ -109,7 +161,11 @@ paths:
         '502':
           $ref: '#/components/responses/BadGateway'
         '503':
-          $ref: '#/components/responses/ServiceUnavailable'
+          description: Servicio no disponible o fallo de prueba inyectado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceUnavailableError'
         '504':
           $ref: '#/components/responses/GatewayTimeout'
     get:

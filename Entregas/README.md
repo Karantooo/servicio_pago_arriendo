@@ -31,6 +31,20 @@ uvicorn entregas_api.main:app --host 0.0.0.0 --port 8081
 
 La autenticación usa `API-Key`: `CLIENT_API_KEY` permite consultas y `ADMIN_API_KEY` permite además escrituras. `/health` es público. La sincronización final con Arriendos es recuperable con `POST /v1/deliveries/{deliveryId}/reconcile-rental`.
 
+## Inyección de fallas para demostraciones
+
+La inyección de fallas está deshabilitada por defecto. Para habilitar temporalmente el control administrativo, configura `DELIVERIES_ENABLE_FAILURE_INJECTION=true` en el servicio de Entregas y reinícialo. El endpoint requiere la `ADMIN_API_KEY`:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8081/admin/failure-injection" `
+  -Headers @{"API-Key" = $env:ADMIN_API_KEY} `
+  -ContentType "application/json" `
+  -Body '{"mode":"FAIL_NEXT"}'
+```
+
+`FAIL_NEXT` hace que la próxima creación/agendamiento responda con HTTP 503 y código `DELIVERY_FAILURE_INJECTED`, sin guardar la entrega; luego vuelve automáticamente a `NORMAL`. `ALWAYS_FAIL` mantiene el fallo hasta configurar `NORMAL`. El control solo debe habilitarse en entornos de prueba o demostración.
+
 ## Pruebas
 
 ```powershell

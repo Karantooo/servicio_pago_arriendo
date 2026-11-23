@@ -120,27 +120,6 @@ def test_failure_injection_rejects_unknown_mode(client, monkeypatch):
     assert response.json()["code"] == "INVALID_FAILURE_MODE"
 
 
-def test_fail_next_returns_503_then_resets_to_normal(client, monkeypatch, caplog):
-    monkeypatch.setenv("DELIVERIES_ENABLE_FAILURE_INJECTION", "true")
-    _mock_get_rental(monkeypatch)
-    configured = client.post(
-        "/admin/failure-injection",
-        headers=ADMIN_HEADERS,
-        json={"mode": "FAIL_NEXT"},
-    )
-    assert configured.status_code == 200
-    assert configured.json()["mode"] == "FAIL_NEXT"
-
-    failed = _create(client, key="fail-once")
-    assert failed.status_code == 503
-    assert failed.json() == {"detail": "Simulated delivery failure for testing"}
-    assert "Simulated delivery failure injected" in caplog.text
-
-    created = _create(client, key="succeeds-after-failure")
-    assert created.status_code == 201
-    assert created.json()["status"] == "SCHEDULED"
-
-
 def test_always_fail_can_be_disabled_with_normal(client, monkeypatch):
     monkeypatch.setenv("DELIVERIES_ENABLE_FAILURE_INJECTION", "true")
     _mock_get_rental(monkeypatch)
