@@ -93,6 +93,12 @@ Tras persistir el resultado del callback de Webpay, Pagos solicita la conciliaci
 
 ## Servicio de Pagos y resiliencia
 
+Los nueve experimentos reproducibles de éxito, compensación y falla en cascada
+están agrupados en [experimentos/README.md](./experimentos/README.md). En
+PowerShell se ejecutan desde la raíz con `.\experimentos\run.ps1`; generan una
+salida con evidencia estructurada y usan bases SQLite temporales y un proveedor
+mock.
+
 El repositorio incluye el microservicio `pagos` con un contrato `pagos/open-api-pagos_transbank.yaml`
 
 - `pagos/main.py` crea la aplicación; `pagos/routes/` separa las rutas de pagos, retorno Transbank, salud y control del mock.
