@@ -89,7 +89,7 @@ Los arriendos v2 nuevos reservan el equipo para el intervalo `[startDate, endDat
 
 Para cancelar un arriendo v2 con entrega agendada, `POST /v2/rentals/{rentalId}/cancel` cancela la entrega, reembolsa el cobro y libera el equipo, en ese orden. Si un paso no se confirma, el arriendo queda `CANCELLING`; repetir el mismo endpoint retoma el paso pendiente. Una vez entregado el equipo, se usa la devolución.
 
-Tras persistir el resultado del callback de Webpay, Pagos solicita la conciliación a Arriendos mediante la API interna. Arriendos consulta el resultado directamente en Pagos. Si el aviso se pierde, el worker de Arriendos revisa por lotes las Sagas de creación pendientes con un ID de pago y un paso recuperable de pago o agendamiento. Docker Compose lo habilita cada 15 segundos por defecto con `SAGA_RECOVERY_INTERVAL_SECONDS` (`0` lo deshabilita). Los estados de reserva, reembolso o liberación inciertos siguen usando la conciliación manual.
+Tras persistir el resultado del callback de Webpay, Pagos solicita la conciliación a Arriendos mediante la API interna. Arriendos consulta el resultado directamente en Pagos. Si el aviso se pierde, el worker de Arriendos revisa por lotes las Sagas de creación pendientes con un ID de pago y un paso recuperable de pago o agendamiento. Esto incluye `IN_DOUBT / START_PAYMENT` con un ID de pago conocido. El worker consulta Pagos y solo vuelve a iniciar el checkout si Pagos indica `PAYMENT_PENDING_RETRY`. Para Sagas sin ID de pago se mantiene la conciliación manual. Docker Compose lo habilita cada 15 segundos por defecto con `SAGA_RECOVERY_INTERVAL_SECONDS` (`0` lo deshabilita). Los estados de reserva, reembolso o liberación inciertos siguen usando la conciliación manual.
 
 ## Servicio de Pagos y resiliencia
 
