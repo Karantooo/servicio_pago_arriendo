@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from entregas_api.apis.deliveries_api_base import BaseDeliveriesApi
 from entregas_api.database import SessionLocal
 from entregas_api.db_models import Delivery, DeliveryEventRecord, IdempotencyKey
+from entregas_api.impl.failure_injection import should_fail_delivery_creation
 from entregas_api.models.cancel_request import CancelRequest
 from entregas_api.models.deliver_request import DeliverRequest
 from entregas_api.models.delivery_event import DeliveryEvent
@@ -262,6 +263,12 @@ class DeliveriesApi(BaseDeliveriesApi):
             await rentals.get_saga(delivery_request.rental_id),
             delivery_request.payment_id,
         )
+
+        if should_fail_delivery_creation():
+            raise _conflict(
+                "DELIVERY_FAILURE_INJECTED",
+                "Fallo de entrega inyectado para pruebas.",
+            )
 
         with SessionLocal() as db:
             row = Delivery(

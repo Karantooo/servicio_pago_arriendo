@@ -182,7 +182,7 @@ Recrear Entregas para aplicar la variable:
 docker compose up -d --force-recreate entregas-api
 ```
 
-Activar `FAIL_NEXT` (falla una creación y se restablece automáticamente):
+Activar `FAIL_NEXT` para que Entregas rechace el siguiente agendamiento con `409 DELIVERY_FAILURE_INJECTED` antes de persistirlo. Arriendos confirma el reembolso y libera la reserva. Consultar `GET /api/rentals/{rentalId}/saga` y esperar `refundStatus: REFUNDED`, `equipmentReleaseStatus: COMPLETED` y `status: COMPENSATED`. El modo vuelve automáticamente a `NORMAL`.
 
 ```bash
 curl -i --oauth2-bearer "$TOKEN" \

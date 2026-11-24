@@ -43,7 +43,7 @@ Invoke-RestMethod -Method Post `
   -Body '{"mode":"FAIL_NEXT"}'
 ```
 
-`FAIL_NEXT` hace que la próxima creación/agendamiento responda con HTTP 503 y código `DELIVERY_FAILURE_INJECTED`, sin guardar la entrega; luego vuelve automáticamente a `NORMAL`. `ALWAYS_FAIL` mantiene el fallo hasta configurar `NORMAL`. El control solo debe habilitarse en entornos de prueba o demostración.
+`FAIL_NEXT` hace que la próxima creación/agendamiento responda con HTTP 409 y código `DELIVERY_FAILURE_INJECTED`, sin guardar la entrega; luego vuelve automáticamente a `NORMAL`. `ALWAYS_FAIL` mantiene el fallo hasta configurar `NORMAL`. El control solo debe habilitarse en entornos de prueba o demostración.
 
 ## Pruebas
 
