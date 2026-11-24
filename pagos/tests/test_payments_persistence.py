@@ -115,6 +115,49 @@ def test_open_provider_circuit_persists_retryable_payment(client):
     assert 'http_request_duration_seconds_count{endpoint="POST /payments/charge",service="payments-api",status_code="503"}' in exposition
 
 
+def test_concurrent_charge_retries_claim_provider_creation_once(client, monkeypatch):
+    for _ in range(circuit_breaker.threshold):
+        circuit_breaker.on_failure()
+    degraded = create_charge(client, key="concurrent-retry")
+    assert degraded.status_code == 503
+    payment_id = degraded.json()["detail"]["payment_id"]
+    circuit_breaker.on_success()
+
+    provider = get_provider()
+    create_transaction = provider.create_transaction
+    entered = Event()
+    finish = Event()
+    calls = []
+
+    def slow_create(*args):
+        calls.append(args[0])
+        entered.set()
+        assert finish.wait(timeout=5)
+        return create_transaction(*args)
+
+    monkeypatch.setattr(provider, "create_transaction", slow_create)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(create_charge, client, "concurrent-retry")
+        try:
+            assert entered.wait(timeout=5)
+            replay = create_charge(client, key="concurrent-retry")
+            assert replay.status_code == 200
+            assert replay.json()["payment_id"] == payment_id
+            assert replay.json()["status"] == "PENDING"
+            assert replay.json()["token"] is None
+        finally:
+            finish.set()
+
+        result = first.result(timeout=5)
+    assert result.status_code == 200
+    assert result.json()["payment_id"] == payment_id
+    assert result.json()["token"]
+    assert create_charge(client, key="concurrent-retry").json() == result.json()
+    assert calls == [payment_id]
+    with SessionLocal() as db:
+        assert db.query(Payment).count() == 1
+
+
 def test_request_id_is_echoed_and_latency_is_exported(client):
     response = client.get("/health", headers={"X-Request-ID": "load-test-42"})
 
