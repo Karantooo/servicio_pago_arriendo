@@ -14,11 +14,11 @@ from experimentos.helpers import (
 
 
 def test_reconciled_charge_advances_pending_saga_to_completed(
-    arriendo_client, db_session, monkeypatch
+    arriendo_client, db_session, monkeypatch, experiment_iteration
 ):
     calls = []
 
-    trace = ExperimentTrace()
+    trace = ExperimentTrace(experiment_iteration)
 
     def reserve(*args, **kwargs):
         calls.append(("RESERVE_EQUIPMENT", args[0]))

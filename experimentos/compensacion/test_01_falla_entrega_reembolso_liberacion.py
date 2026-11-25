@@ -14,11 +14,10 @@ from experimentos.helpers import (
 
 
 def test_delivery_failure_refunds_then_releases_equipment(
-    arriendo_client, db_session, monkeypatch
+    arriendo_client, db_session, monkeypatch, experiment_iteration
 ):
     calls = []
-
-    trace = ExperimentTrace()
+    trace = ExperimentTrace(experiment_iteration)
 
     def reserve(equipment_id, reservation_id, **_):
         calls.append(("RESERVE_EQUIPMENT", equipment_id, reservation_id))
@@ -51,10 +50,13 @@ def test_delivery_failure_refunds_then_releases_equipment(
             request={"url": url, "body": json},
             response={"status_code": 409, "code": "DELIVERY_FAILURE_INJECTED"},
         )
-        return httpx.Response(409, json={
-            "code": "DELIVERY_FAILURE_INJECTED",
-            "message": "Fallo de entrega inyectado para pruebas.",
-        })
+        return httpx.Response(
+            409,
+            json={
+                "code": "DELIVERY_FAILURE_INJECTED",
+                "message": "Fallo de entrega inyectado para pruebas.",
+            },
+        )
 
     monkeypatch.setattr(delivery_client.httpx, "post", fail_delivery)
 

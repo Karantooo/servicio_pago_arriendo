@@ -15,11 +15,11 @@ from experimentos.helpers import (
 
 
 def test_complete_rental_commits_reservation_payment_and_delivery(
-    arriendo_client, db_session, monkeypatch
+    arriendo_client, db_session, monkeypatch, experiment_iteration
 ):
     calls = []
 
-    trace = ExperimentTrace()
+    trace = ExperimentTrace(experiment_iteration)
 
     def reserve(equipment_id, reservation_id, **_):
         calls.append(("RESERVE_EQUIPMENT", equipment_id, reservation_id))
