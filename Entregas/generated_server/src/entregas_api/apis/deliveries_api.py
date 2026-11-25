@@ -50,7 +50,6 @@ from entregas_api.security_api import get_token_APIKeyHeader
 from entregas_api.impl.failure_injection import (
     is_failure_injection_enabled,
     set_failure_mode,
-    should_fail_delivery_creation,
 )
 
 router = APIRouter()
@@ -136,10 +135,10 @@ async def get_all_deliveries(
         401: {"model": NotAuthorizedError, "description": "No autenticado"},
         403: {"model": ForbiddenError, "description": "Permisos insuficientes (requiere rol &#x60;admin&#x60;)"},
         404: {"model": NotFoundError, "description": "Arriendo inexistente en Arriendos"},
-        409: {"model": ConflictError, "description": "Conflicto. Posibles códigos: DELIVERY_ALREADY_EXISTS, RENTAL_NOT_READY_FOR_DELIVERY, RENTAL_DATA_MISMATCH, IDEMPOTENCY_KEY_REUSED o IDEMPOTENCY_IN_PROGRESS."},
+        409: {"model": ConflictError, "description": "Conflicto. Posibles códigos: DELIVERY_ALREADY_EXISTS, RENTAL_NOT_READY_FOR_DELIVERY, RENTAL_DATA_MISMATCH, IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_IN_PROGRESS o DELIVERY_FAILURE_INJECTED."},
         500: {"model": InternalServerError, "description": "Error de persistencia local"},
         502: {"model": BadGatewayError, "description": "Respuesta inválida o inesperada del servicio de Arriendos"},
-        503: {"model": ServiceUnavailableError, "description": "Servicio no disponible o fallo de prueba inyectado"},
+        503: {"model": ServiceUnavailableError, "description": "Servicio no disponible"},
         504: {"model": GatewayTimeoutError, "description": "Timeout al comunicar con el servicio de Arriendos"},
     },
     tags=["Deliveries"],
@@ -154,14 +153,6 @@ async def create_delivery(
     ),
 ) -> DeliveryResponse:
     """Registra la entrega de un arriendo y la deja agendada (&#x60;SCHEDULED&#x60;) para la fecha indicada. Se llama al momento de realizar el pago. Valida contra Arriendos que: - el arriendo existe y &#x60;clientId&#x60; y &#x60;equipmentId&#x60; coinciden, - el arriendo no está cancelado, finalizado ni fallido, - &#x60;scheduledAt&#x60; es futura y no posterior al &#x60;endDate&#x60; del arriendo, - si &#x60;paymentStatus&#x60; es &#x60;PAID&#x60;, la Saga del arriendo está esperando la Entrega, - no existe ya una entrega para ese arriendo."""
-    if should_fail_delivery_creation():
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "DELIVERY_FAILURE_INJECTED",
-                "message": "Fallo de entrega inyectado para pruebas.",
-            },
-        )
     if not BaseDeliveriesApi.subclasses:
         raise HTTPException(status_code=500, detail="Not implemented")
     return await BaseDeliveriesApi.subclasses[0]().create_delivery(idempotency_key, delivery_request)

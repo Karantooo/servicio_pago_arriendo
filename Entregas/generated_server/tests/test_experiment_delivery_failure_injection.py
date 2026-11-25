@@ -46,7 +46,7 @@ def _mock_rental_client(monkeypatch):
     )
 
 
-def test_fail_next_returns_controlled_503_without_persisting_delivery(
+def test_fail_next_returns_controlled_409_without_persisting_delivery(
     client, monkeypatch, caplog
 ):
     monkeypatch.setenv("DELIVERIES_ENABLE_FAILURE_INJECTION", "true")
@@ -65,7 +65,7 @@ def test_fail_next_returns_controlled_503_without_persisting_delivery(
         headers={**ADMIN_HEADERS, "Idempotency-Key": "experiment-fail-once"},
         json=_payload(),
     )
-    assert failed.status_code == 503
+    assert failed.status_code == 409
     assert failed.json() == {
         "code": "DELIVERY_FAILURE_INJECTED",
         "message": "Fallo de entrega inyectado para pruebas.",
@@ -73,10 +73,29 @@ def test_fail_next_returns_controlled_503_without_persisting_delivery(
     assert "Simulated delivery failure injected" in caplog.text
     assert client.get("/v1/deliveries", headers=READONLY_HEADERS).json() == []
 
+    payload = _payload()
     recovered = client.post(
         "/v1/deliveries",
         headers={**ADMIN_HEADERS, "Idempotency-Key": "experiment-after-failure"},
-        json=_payload(),
+        json=payload,
     )
     assert recovered.status_code == 201
     assert recovered.json()["status"] == "SCHEDULED"
+
+    client.post("/admin/failure-injection", headers=ADMIN_HEADERS, json={"mode": "FAIL_NEXT"})
+    replay = client.post(
+        "/v1/deliveries",
+        headers={**ADMIN_HEADERS, "Idempotency-Key": "experiment-after-failure"},
+        json=payload,
+    )
+    assert replay.status_code == 201
+    assert replay.json()["id"] == recovered.json()["id"]
+
+    # La repetición idempotente no consume la inyección del siguiente agendamiento.
+    next_delivery = client.post(
+        "/v1/deliveries",
+        headers={**ADMIN_HEADERS, "Idempotency-Key": "experiment-next-rental"},
+        json={**payload, "rentalId": 11},
+    )
+    assert next_delivery.status_code == 409
+    assert next_delivery.json()["code"] == "DELIVERY_FAILURE_INJECTED"

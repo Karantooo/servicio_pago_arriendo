@@ -129,8 +129,10 @@ def test_always_fail_can_be_disabled_with_normal(client, monkeypatch):
         json={"mode": "ALWAYS_FAIL"},
     )
     assert configured.status_code == 200
-    assert _create(client, key="always-fails-1").status_code == 503
-    assert _create(client, key="always-fails-2").status_code == 503
+    for key in ("always-fails-1", "always-fails-2"):
+        response = _create(client, key=key)
+        assert response.status_code == 409
+        assert response.json()["code"] == "DELIVERY_FAILURE_INJECTED"
 
     reset = client.post(
         "/admin/failure-injection",

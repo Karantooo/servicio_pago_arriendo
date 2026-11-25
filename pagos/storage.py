@@ -130,6 +130,21 @@ def create_payment(
             return existing, False
 
 
+def claim_payment_creation_retry(payment_id: int) -> bool:
+    with SessionLocal() as db:
+        result = db.execute(
+            update(Payment)
+            .where(
+                Payment.payment_id == payment_id,
+                Payment.status == "PAYMENT_PENDING_RETRY",
+            )
+            # PENDING sin token representa una creación de checkout en curso.
+            .values(status="PENDING")
+        )
+        db.commit()
+        return result.rowcount == 1
+
+
 def update_payment(payment_id: int, **changes) -> Payment:
     with SessionLocal() as db:
         payment = db.get(Payment, payment_id)

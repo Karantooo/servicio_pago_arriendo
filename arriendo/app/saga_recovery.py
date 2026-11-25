@@ -4,7 +4,7 @@ import os
 from contextlib import asynccontextmanager, contextmanager
 
 from fastapi import FastAPI, HTTPException
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from app.bd_models import Rental, Saga
@@ -51,7 +51,10 @@ def recover_batch(after_rental_id: int) -> int:
                 Saga.rental_id > after_rental_id,
                 Saga.operation == "CREATE",
                 Saga.status.in_(["IN_PROGRESS", "IN_DOUBT"]),
-                Saga.current_step.in_(DELIVERY_RETRY_STEPS | {"WAITING_PAYMENT"}),
+                or_(
+                    Saga.current_step.in_(DELIVERY_RETRY_STEPS | {"WAITING_PAYMENT"}),
+                    (Saga.current_step == "START_PAYMENT") & (Saga.status == "IN_DOUBT"),
+                ),
                 Saga.payment_id.is_not(None),
                 Saga.delivery_id.is_(None),
                 Rental.status == "PENDING",

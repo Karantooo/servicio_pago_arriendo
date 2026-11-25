@@ -145,7 +145,7 @@ paths:
         '409':
           description: |-
             Conflicto. Posibles códigos: DELIVERY_ALREADY_EXISTS, RENTAL_NOT_READY_FOR_DELIVERY,
-            RENTAL_DATA_MISMATCH, IDEMPOTENCY_KEY_REUSED o IDEMPOTENCY_IN_PROGRESS.
+            RENTAL_DATA_MISMATCH, IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_IN_PROGRESS o DELIVERY_FAILURE_INJECTED.
           content:
             application/json:
               schema:
@@ -161,7 +161,7 @@ paths:
         '502':
           $ref: '#/components/responses/BadGateway'
         '503':
-          description: Servicio no disponible o fallo de prueba inyectado
+          description: Servicio no disponible
           content:
             application/json:
               schema:

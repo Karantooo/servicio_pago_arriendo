@@ -903,3 +903,68 @@ def test_cancel_scheduled_delivery_resumes_before_refund(client, db_session, mon
     assert result.json()["status"] == "CANCELLED"
     assert client.post(url).status_code == 200
     assert calls == [("cancel", 701), ("cancel", 701), ("refund", 501), ("release", 50)]
+
+
+@pytest.mark.parametrize(
+    ("saga_status", "payment_id", "payment_status", "same_rental", "queries", "retries"),
+    [
+        ("IN_DOUBT", 501, "PAYMENT_PENDING_RETRY", True, 2, 1),
+        ("IN_DOUBT", 501, "PAYMENT_PENDING_RETRY", False, 1, 0),
+        ("IN_DOUBT", 501, "UNKNOWN", True, 1, 0),
+        ("IN_DOUBT", None, None, True, 0, 0),
+        ("IN_PROGRESS", 501, None, True, 0, 0),
+    ],
+)
+def test_worker_recovers_only_safe_payment_starts(
+    client, db_session, monkeypatch, saga_status, payment_id, payment_status,
+    same_rental, queries, retries,
+):
+    from app import saga_orchestrator, saga_recovery
+
+    client_id = _create_client(client)
+    _create_tariff(client)
+    monkeypatch.setattr(saga_orchestrator.grpc_client, "reservar_unidad", lambda *_, **__: None)
+
+    def interrupted_checkout(**_):
+        raise PaymentStartUncertain("Inicio interrumpido", payment_id=payment_id)
+
+    monkeypatch.setattr(saga_orchestrator, "iniciar_cobro", interrupted_checkout)
+    created = client.post(
+        "/v2/rentals", json={**PAYLOAD, "clientId": client_id}, headers=IDEMPOTENCY_HEADERS,
+    )
+    assert created.status_code == 202
+    saga = db_session.query(Saga).one()
+    assert saga.current_step == "START_PAYMENT"
+    saga.status = saga_status
+    db_session.commit()
+    rental_id = saga.rental_id
+
+    looked_up = []
+    attempts = []
+
+    def lookup(queried_payment_id):
+        looked_up.append(queried_payment_id)
+        return _pending_payment(
+            rental_id if same_rental else rental_id + 1,
+            "PENDING" if attempts else payment_status,
+        )
+
+    def retry(**kwargs):
+        attempts.append(kwargs)
+        return PaymentCheckout(
+            paymentId=501, status="PENDING", redirectUrl="https://webpay.example/pagar", token="token-501",
+        )
+
+    monkeypatch.setattr(saga_orchestrator, "consultar_pago", lookup)
+    monkeypatch.setattr(saga_orchestrator, "iniciar_cobro", retry)
+    assert saga_recovery.recover_batch(0) == 0
+    assert looked_up == [payment_id] * queries
+    assert len(attempts) == retries
+
+    db_session.refresh(saga)
+    if retries:
+        assert attempts[0]["idempotency_key"] == IDEMPOTENCY_HEADERS["Idempotency-Key"]
+        assert saga.status == "IN_PROGRESS"
+        assert saga.current_step == "WAITING_PAYMENT"
+        assert saga.payment_id == payment_id
+        assert saga.checkout_token == "token-501"

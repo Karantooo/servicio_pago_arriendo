@@ -14,6 +14,7 @@ from pagos.providers import get_provider
 from pagos.providers.base import ProviderUnavailable
 from pagos.resilience import CircuitOpenError, circuit_breaker, invoke_provider_call
 from pagos.storage import (
+    claim_payment_creation_retry,
     create_payment,
     create_refund,
     get_payment,
@@ -88,15 +89,19 @@ async def charge_payment(
             },
         )
 
-    existing = get_payment_by_idempotency_key(idempotency_key)
-    if existing is not None:
-        _validate_reused_charge(existing, payload)
-        if existing.status != "PAYMENT_PENDING_RETRY":
-            return JSONResponse(status_code=200, content=serialize_payment(existing))
-        payment = existing
-        created = False
-    else:
+    payment = get_payment_by_idempotency_key(idempotency_key)
+    if payment is None:
         payment, created = create_payment(payload, idempotency_key)
+    else:
+        created = False
+
+    if not created:
+        _validate_reused_charge(payment, payload)
+        if payment.status != "PAYMENT_PENDING_RETRY":
+            return JSONResponse(status_code=200, content=serialize_payment(payment))
+        if not claim_payment_creation_retry(payment.payment_id):
+            current_payment = get_payment(payment.payment_id)
+            return JSONResponse(status_code=200, content=serialize_payment(current_payment))
 
     try:
         circuit_breaker.before_call()

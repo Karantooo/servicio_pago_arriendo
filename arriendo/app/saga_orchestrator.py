@@ -15,6 +15,7 @@ from app.models import PaymentCheckout
 from app.payments_client import (
     PaymentLookupUncertain,
     PaymentStartRejected,
+    PaymentState,
     PaymentStartUncertain,
     RefundRejected,
     RefundUncertain,
@@ -686,15 +687,7 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
         if saga.current_step in DELIVERY_RETRY_STEPS:
             return _schedule_paid_delivery(db, saga, rental)
 
-    try:
-        payment = consultar_pago(saga.payment_id)
-    except PaymentLookupUncertain as error:
-        _mark_payment_in_doubt(db, saga.id, error)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=_payment_pending_retry_detail(saga, error),
-        ) from error
-
+    payment = _lookup_rental_payment(db, saga, rental)
     if payment.status == "PAYMENT_PENDING_RETRY":
         try:
             checkout = iniciar_cobro(
@@ -727,14 +720,7 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
                     "message": "El reintento devolvió un ID de pago diferente.",
                 },
             )
-        payment = consultar_pago(saga.payment_id)
-
-    if payment.rental_id != rental.id or payment.amount_total != rental.amount_rent + rental.amount_deposit:
-        _mark_payment_in_doubt(db, saga.id, ValueError("El cobro no coincide con el arriendo."))
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={"code": "PAYMENT_MISMATCH", "message": "El cobro no coincide con el arriendo."},
-        )
+        payment = _lookup_rental_payment(db, saga, rental)
 
     if payment.status in {"FAILED", "CANCELLED"}:
         _compensate_failed_payment(
@@ -780,6 +766,25 @@ def reconcile_payment(db: Session, rental_id: int) -> Saga:
         )
     db.commit()
     return db.get(Saga, saga.id)
+
+
+def _lookup_rental_payment(db: Session, saga: Saga, rental: Rental) -> PaymentState:
+    try:
+        payment = consultar_pago(saga.payment_id)
+    except PaymentLookupUncertain as error:
+        _mark_payment_in_doubt(db, saga.id, error)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_payment_pending_retry_detail(saga, error),
+        ) from error
+
+    if payment.rental_id != rental.id or payment.amount_total != rental.amount_rent + rental.amount_deposit:
+        _mark_payment_in_doubt(db, saga.id, ValueError("El cobro no coincide con el arriendo."))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"code": "PAYMENT_MISMATCH", "message": "El cobro no coincide con el arriendo."},
+        )
+    return payment
 
 
 def _mark_payment_in_doubt(db: Session, saga_id: str, error: Exception) -> None:
