@@ -7,7 +7,8 @@ from app.bd_models import SagaStepEvent
 
 
 class ExperimentTrace:
-    def __init__(self):
+    def __init__(self, iteration):
+        self.iteration = iteration
         self._steps = []
         self._lock = threading.Lock()
 
@@ -18,6 +19,8 @@ class ExperimentTrace:
             )
 
     def http(self, action, method, path, request, response, elapsed_ms=None):
+        if elapsed_ms is None:
+            elapsed_ms = response.extensions.get("experiment_elapsed_ms")
         try:
             response_body = response.json()
         except ValueError:
@@ -143,6 +146,7 @@ def show_evidence(name, **evidence):
     if trace is not None:
         timeline = trace.snapshot()
         evidence["timeline"] = timeline
+        evidence["iteration"] = trace.iteration
     for step in timeline:
         print(
             "TRACE_JSON "

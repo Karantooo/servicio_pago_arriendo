@@ -570,6 +570,126 @@
           "strategy": "ip"
         }
       }
+    },
+    {
+      "endpoint": "/api/clients",
+      "method": "POST",
+      "input_headers": ["API-Key", "Content-Type", "X-Request-ID"],
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": ["http://arriendos-api:8080"],
+          "url_pattern": "/v1/clients",
+          "encoding": "no-op"
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["admin"],
+          "roles_key": "roles"
+        }
+      }
+    },
+    {
+      "endpoint": "/api/tariffs/{equipmentId}",
+      "method": "PUT",
+      "input_headers": ["API-Key", "Content-Type", "X-Request-ID"],
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": ["http://arriendos-api:8080"],
+          "url_pattern": "/v2/tariffs/{equipmentId}",
+          "encoding": "no-op"
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["admin"],
+          "roles_key": "roles"
+        }
+      }
+    },
+    {
+      "endpoint": "/api/rentals/{rentalId}/reconcile-payment",
+      "method": "POST",
+      "input_headers": ["API-Key", "X-Request-ID"],
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": ["http://arriendos-api:8080"],
+          "url_pattern": "/v2/rentals/{rentalId}/reconcile-payment",
+          "encoding": "no-op"
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["admin"],
+          "roles_key": "roles"
+        }
+      }
+    },
+    {
+      "endpoint": "/api/rentals/{rentalId}/cancel",
+      "method": "POST",
+      "input_headers": ["API-Key", "X-Request-ID"],
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": ["http://arriendos-api:8080"],
+          "url_pattern": "/v2/rentals/{rentalId}/cancel",
+          "encoding": "no-op"
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["admin"],
+          "roles_key": "roles"
+        }
+      }
+    },
+    {
+      "endpoint": "/api/deliveries/{deliveryId}/deliver",
+      "method": "POST",
+      "input_headers": ["API-Key", "Content-Type", "X-Request-ID"],
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": ["http://entregas-api:8081"],
+          "url_pattern": "/v1/deliveries/{deliveryId}/deliver",
+          "encoding": "no-op"
+        }
+      ],
+      "extra_config": {
+        "auth/validator": {
+          "alg": "HS256",
+          "audience": ["servicio-pago-arriendo"],
+          "disable_jwk_security": true,
+          "issuer": "servicio-pago-arriendo-test",
+          "jwk_local_path": "/etc/krakend/jwk-symmetric.json",
+          "roles": ["admin"],
+          "roles_key": "roles"
+        }
+      }
     }
   ]
 }

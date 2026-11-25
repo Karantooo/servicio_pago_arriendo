@@ -1,10 +1,14 @@
 import atexit
+import json
+import logging
+import math
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import types
-import logging
+from collections import defaultdict
 from pathlib import Path
 
 import pytest
@@ -16,6 +20,83 @@ from sqlalchemy.orm import sessionmaker
 ROOT = Path(__file__).resolve().parents[1]
 _temporary_databases = tempfile.TemporaryDirectory(prefix="experimentos-saga-")
 _database_dir = Path(_temporary_databases.name)
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--iterations",
+        type=int,
+        default=50,
+        help="cantidad de ejecuciones de cada experimento (predeterminado: 50)",
+    )
+
+
+def pytest_configure(config):
+    if config.getoption("--iterations") < 1:
+        raise pytest.UsageError("--iterations debe ser mayor que cero")
+    config._experiment_run_metrics = []
+
+
+def pytest_generate_tests(metafunc):
+    if "experiment_iteration" in metafunc.fixturenames:
+        iterations = metafunc.config.getoption("--iterations")
+        metafunc.parametrize(
+            "experiment_iteration",
+            range(1, iterations + 1),
+            ids=lambda iteration: f"ejecucion-{iteration:02d}",
+        )
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+    state = getattr(item, "_experiment_timing", {"elapsed_seconds": 0, "result": "passed"})
+    state["elapsed_seconds"] += report.duration
+    if report.outcome != "passed":
+        state["result"] = report.outcome
+    item._experiment_timing = state
+    if report.when == "teardown":
+        metric = {
+            "test": item.originalname,
+            "iteration": item.callspec.params["experiment_iteration"],
+            "elapsed_ms": round(state["elapsed_seconds"] * 1000, 2),
+            "result": state["result"],
+        }
+        item.config._experiment_run_metrics.append(metric)
+        print("RUN_METRIC_JSON " + json.dumps(metric, sort_keys=True))
+
+
+def pytest_sessionfinish(session, exitstatus):
+    grouped = defaultdict(list)
+    for metric in session.config._experiment_run_metrics:
+        grouped[metric["test"]].append(metric)
+
+    for test, metrics in sorted(grouped.items()):
+        durations = sorted(metric["elapsed_ms"] for metric in metrics)
+        p95_index = max(0, math.ceil(len(durations) * 0.95) - 1)
+        summary = {
+            "test": test,
+            "executions": len(metrics),
+            "passed": sum(metric["result"] == "passed" for metric in metrics),
+            "failed": sum(metric["result"] != "passed" for metric in metrics),
+            "min_ms": durations[0],
+            "average_ms": round(sum(durations) / len(durations), 2),
+            "p95_ms": durations[p95_index],
+            "max_ms": durations[-1],
+        }
+        print("EXPERIMENT_SUMMARY_JSON " + json.dumps(summary, sort_keys=True))
+
+
+class TimedTestClient(TestClient):
+    def request(self, *args, **kwargs):
+        started = time.perf_counter()
+        response = super().request(*args, **kwargs)
+        response.extensions["experiment_elapsed_ms"] = round(
+            (time.perf_counter() - started) * 1000, 2
+        )
+        return response
+
 
 os.environ["DATABASE_URL"] = f"sqlite:///{_database_dir / 'arriendos.sqlite'}"
 os.environ["ADMIN_API_KEY"] = "experiment-admin-key"
@@ -119,7 +200,7 @@ def arriendo_client(db_session):
 
     arriendos_app.dependency_overrides[get_arriendos_db] = override_get_db
     try:
-        with TestClient(arriendos_app) as client:
+        with TimedTestClient(arriendos_app) as client:
             client.headers.update({"API-Key": os.environ["ADMIN_API_KEY"]})
             yield client
     finally:
@@ -134,7 +215,7 @@ def payments_client():
     get_provider().set_mode("NORMAL")
     bulkhead_rejections_total.labels(service="payments-api")._value.set(0)
     try:
-        with TestClient(payments_app) as client:
+        with TimedTestClient(payments_app) as client:
             yield client
     finally:
         get_provider().set_mode("NORMAL")

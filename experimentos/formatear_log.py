@@ -10,7 +10,14 @@ Uso:
 import json, re, sys
 from pathlib import Path
 
-TAGS = ("TRACE_JSON", "APP_LOG_JSON", "SAGA_EVENT_JSON", "EVIDENCE_JSON")
+TAGS = (
+    "TRACE_JSON",
+    "APP_LOG_JSON",
+    "SAGA_EVENT_JSON",
+    "EVIDENCE_JSON",
+    "RUN_METRIC_JSON",
+    "EXPERIMENT_SUMMARY_JSON",
+)
 TAG_RE = re.compile(r"(%s) (\{.*\})\s*$" % "|".join(TAGS))
 TEST_RE = re.compile(r"^(\S+\.py::\S+)\s*")
 RESULT_RE = re.compile(r"^(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)\b")
@@ -29,7 +36,7 @@ def leer(path):
 
 
 def parsear(lineas):
-    tests, actual, cabecera, resumen = [], None, [], []
+    tests, actual, cabecera, resumen, mediciones = [], None, [], [], []
     for ln in lineas:
         m = TEST_RE.match(ln)
         if m:
@@ -42,7 +49,11 @@ def parsear(lineas):
         m = TAG_RE.search(ln)
         if m:
             try:
-                actual["eventos"].append((m.group(1), json.loads(m.group(2))))
+                tag, data = m.group(1), json.loads(m.group(2))
+                if tag == "EXPERIMENT_SUMMARY_JSON":
+                    mediciones.append(data)
+                else:
+                    actual["eventos"].append((tag, data))
                 continue
             except json.JSONDecodeError:
                 pass
@@ -51,7 +62,7 @@ def parsear(lineas):
             actual["resultado"] = r.group(1)
         elif ln.strip():
             (resumen if ln.startswith(("=", "-- Docs", "  ", "..")) else actual["otras"]).append(ln)
-    return cabecera, tests, resumen
+    return cabecera, tests, resumen, mediciones
 
 
 def corto(v, n=90):
@@ -95,6 +106,20 @@ def fmt_trace(d, full):
 def fmt_evento(tag, d, full):
     if tag == "TRACE_JSON":
         return fmt_trace(d, full)
+    if tag == "RUN_METRIC_JSON":
+        return [
+            f"  EJECUCION {d.get('iteration')}: "
+            f"{d.get('elapsed_ms')} ms ({d.get('result')})"
+        ]
+    if tag == "EXPERIMENT_SUMMARY_JSON":
+        return [
+            "  RESUMEN "
+            f"{d.get('executions')} ejecuciones: "
+            f"promedio {d.get('average_ms')} ms, "
+            f"min {d.get('min_ms')} ms, p95 {d.get('p95_ms')} ms, "
+            f"max {d.get('max_ms')} ms; "
+            f"{d.get('passed')} OK, {d.get('failed')} fallidas"
+        ]
     if tag == "APP_LOG_JSON":
         det = d.get("details") or {}
         det_s = ", ".join(f"{k}={corto(v, 40)}" for k, v in det.items())
@@ -109,7 +134,7 @@ def evidencia(d):
     return json.dumps(d, ensure_ascii=False, indent=2)
 
 
-def render(cabecera, tests, resumen, md, full):
+def render(cabecera, tests, resumen, mediciones, md, full):
     H = (lambda n, t: f"{'#'*n} {t}") if md else (lambda n, t: f"\n{t}\n{('=' if n<3 else '-')*len(t)}")
     out = [H(1, "Reporte de experimentos")]
     out += [l for l in cabecera if l.strip()][:6]
@@ -132,6 +157,13 @@ def render(cabecera, tests, resumen, md, full):
             if tag == "EVIDENCE_JSON":
                 out += ["", "Evidencia:", "```json" if md else "", evidencia(d), "```" if md else ""]
         out += t["otras"]
+    if mediciones:
+        out += [H(2, "Resumen de tiempos por experimento")]
+        out += [
+            f"  {measurement['test']}: "
+            + fmt_evento("EXPERIMENT_SUMMARY_JSON", measurement, full)[0].strip()
+            for measurement in mediciones
+        ]
     if resumen:
         out += [H(2, "Resumen de pytest")] + resumen
     return "\n".join(out) + "\n"
@@ -143,9 +175,9 @@ def main():
         sys.exit(__doc__)
     md, full = "--md" in sys.argv, "--full" in sys.argv
     src = Path(args[0])
-    cab, tests, res = parsear(leer(src))
+    cab, tests, res, mediciones = parsear(leer(src))
     dst = src.with_suffix(".legible." + ("md" if md else "txt"))
-    dst.write_text(render(cab, tests, res, md, full), encoding="utf-8")
+    dst.write_text(render(cab, tests, res, mediciones, md, full), encoding="utf-8")
     print(f"OK -> {dst}  ({len(tests)} tests)")
 
 
