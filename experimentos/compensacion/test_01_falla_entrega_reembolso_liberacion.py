@@ -1,6 +1,7 @@
-from app import saga_orchestrator
+import httpx
+
+from app import delivery_client, saga_orchestrator
 from app.bd_models import Rental, Saga
-from app.delivery_client import DeliverySchedulingRejected
 from app.models import PaymentCheckout
 from app.payments_client import RefundState
 
@@ -43,16 +44,19 @@ def test_delivery_failure_refunds_then_releases_equipment(
     )
     monkeypatch.setattr(saga_orchestrator, "iniciar_cobro", charge)
 
-    def fail_delivery(**_):
+    def fail_delivery(url, *, json, **_):
         calls.append(("DELIVERY_FAILED", None))
         trace.add(
             "agendar_entrega",
-            request={},
-            response={"result": "rejected", "reason": "Fallo final de agendamiento inyectado."},
+            request={"url": url, "body": json},
+            response={"status_code": 409, "code": "DELIVERY_FAILURE_INJECTED"},
         )
-        raise DeliverySchedulingRejected("Fallo final de agendamiento inyectado.")
+        return httpx.Response(409, json={
+            "code": "DELIVERY_FAILURE_INJECTED",
+            "message": "Fallo de entrega inyectado para pruebas.",
+        })
 
-    monkeypatch.setattr(saga_orchestrator, "agendar_entrega", fail_delivery)
+    monkeypatch.setattr(delivery_client.httpx, "post", fail_delivery)
 
     def refund(**kwargs):
         calls.append(("REFUND_CONFIRMED", kwargs["payment_id"]))

@@ -15,11 +15,11 @@ from experimentos.helpers import (
 
 
 def test_release_error_is_explicit_and_retry_finishes_compensation(
-    arriendo_client, db_session, monkeypatch
+    arriendo_client, db_session, monkeypatch, experiment_iteration
 ):
     calls = []
 
-    trace = ExperimentTrace()
+    trace = ExperimentTrace(experiment_iteration)
 
     monkeypatch.setattr(
         saga_orchestrator.grpc_client,

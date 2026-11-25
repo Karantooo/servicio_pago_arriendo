@@ -13,11 +13,11 @@ from experimentos.helpers import (
 
 
 def test_uncertain_refund_holds_reservation_until_reconciliation(
-    arriendo_client, db_session, monkeypatch
+    arriendo_client, db_session, monkeypatch, experiment_iteration
 ):
     calls = []
 
-    trace = ExperimentTrace()
+    trace = ExperimentTrace(experiment_iteration)
 
     monkeypatch.setattr(
         saga_orchestrator.grpc_client,
