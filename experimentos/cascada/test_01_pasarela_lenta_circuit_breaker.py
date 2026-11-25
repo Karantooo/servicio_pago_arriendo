@@ -12,7 +12,7 @@ from experimentos.cascada.helpers import (
 
 
 def test_slow_provider_opens_breaker_and_fast_fails_with_retry_fallback(
-    payments_client, monkeypatch, caplog
+    payments_client, monkeypatch, caplog, experiment_iteration
 ):
     import pagos.providers.mock_provider as mock_provider_module
     import pagos.resilience as resilience
@@ -20,7 +20,7 @@ def test_slow_provider_opens_breaker_and_fast_fails_with_retry_fallback(
     monkeypatch.setattr(mock_provider_module, "TIMEOUT_SECONDS", 0.35)
     monkeypatch.setattr(resilience, "TIMEOUT_SECONDS", 0.04)
     threshold = circuit_breaker.threshold
-    trace = ExperimentTrace()
+    trace = ExperimentTrace(experiment_iteration)
     before_metrics = metrics_snapshot(payments_client)
     trace.add("estado_inicial", circuit="CLOSED", metrics=before_metrics)
     set_mode(payments_client, "SLOW", trace=trace)
@@ -87,4 +87,4 @@ def test_slow_provider_opens_breaker_and_fast_fails_with_retry_fallback(
         },
         trace=trace,
     )
-    time.sleep(0.4)
+    time.sleep(mock_provider_module.TIMEOUT_SECONDS + 1)

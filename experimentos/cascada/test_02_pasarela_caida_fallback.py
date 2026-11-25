@@ -12,9 +12,9 @@ from experimentos.cascada.helpers import (
 
 
 def test_down_provider_opens_breaker_and_rejects_later_calls_quickly(
-    payments_client, caplog
+    payments_client, caplog, experiment_iteration
 ):
-    trace = ExperimentTrace()
+    trace = ExperimentTrace(experiment_iteration)
     before_metrics = metrics_snapshot(payments_client)
     trace.add("estado_inicial", circuit="CLOSED", metrics=before_metrics)
     set_mode(payments_client, "DOWN", trace=trace)

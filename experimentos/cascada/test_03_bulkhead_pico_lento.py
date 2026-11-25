@@ -15,7 +15,7 @@ from experimentos.cascada.helpers import (
 
 
 def test_bulkhead_rejects_overload_without_exhausting_health_endpoint(
-    payments_client, monkeypatch, caplog
+    payments_client, monkeypatch, caplog, experiment_iteration
 ):
     import pagos.providers.mock_provider as mock_provider_module
     import pagos.resilience as resilience
@@ -25,7 +25,7 @@ def test_bulkhead_rejects_overload_without_exhausting_health_endpoint(
     monkeypatch.setattr(resilience, "TIMEOUT_SECONDS", 0.05)
     monkeypatch.setattr(resilience, "bulkhead", Bulkhead(capacity=capacity))
     bulkhead_rejections_total.labels(service="payments-api")._value.set(0)
-    trace = ExperimentTrace()
+    trace = ExperimentTrace(experiment_iteration)
     baseline = metrics_snapshot(payments_client)
     trace.add("estado_inicial", bulkhead_capacity=capacity, metrics=baseline)
     set_mode(payments_client, "SLOW", trace=trace)
